@@ -1,9 +1,14 @@
 {
   "schema": 1,
-  "index_version": 2,
-  "generated_at": "2026-05-09T00:00:00Z",
-  "expires_at": "2026-05-16T00:00:00Z",
+  "index_version": 3,
+  "generated_at": "2026-05-09T07:02:34Z",
+  "expires_at": "2026-05-16T07:02:34Z",
   "packages": {
+    "pkg": {
+      "sha256": "97ca8ec04cfbd3c4bd924cf967d74bcd4ee44a998321d1993dc71453efd7e73d",
+      "size": 515,
+      "url": "packages/pkg.json"
+    },
     "yurt-greet": {
       "sha256": "957dce83d9b6e8f6951a9abe93030c31a7cf6cb96a6377841998cf4f0224e2c5",
       "size": 534,
