@@ -1,0 +1,18 @@
+{
+  "name": "busybox",
+  "versions": [
+    {
+      "version": "1.37.0",
+      "build": "yurt_0",
+      "url": "artifacts/busybox/1.37.0/busybox-1.37.0-yurt_0.yurtpkg",
+      "sha256": "41cfd7e93bdcfc3b05f8af4d319f2eac2c253d3b7d49765163dd71945674b2dd",
+      "size": 447583,
+      "signing": {
+        "subject": "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main",
+        "issuer": "https://token.actions.githubusercontent.com"
+      },
+      "depends": [],
+      "yanked": false
+    }
+  ]
+}
