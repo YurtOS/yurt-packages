@@ -11,6 +11,8 @@ on:
           - yurt-greet
           - pkg
           - busybox
+          - ncurses
+          - zsh
 
 permissions:
   contents: write
