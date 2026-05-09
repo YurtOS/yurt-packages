@@ -1,0 +1,138 @@
+name: Publish Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "Package port to build and publish"
+        required: true
+        type: choice
+        options:
+          - yurt-greet
+          - pkg
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out yurt-packages
+        uses: actions/checkout@v4
+        with:
+          path: yurt-packages
+
+      - name: Check out yurt-ports
+        uses: actions/checkout@v4
+        with:
+          repository: YurtOS/yurt-ports
+          path: yurt-ports
+
+      - name: Check out yurt-pkg
+        uses: actions/checkout@v4
+        with:
+          repository: YurtOS/yurt-pkg
+          path: yurt-pkg
+
+      - name: Check out yurtos-kernel
+        uses: actions/checkout@v4
+        with:
+          repository: YurtOS/yurtos-kernel
+          path: yurtos-kernel
+
+      - name: Check out yurt-greet source
+        if: inputs.package == 'yurt-greet'
+        uses: actions/checkout@v4
+        with:
+          repository: YurtOS/yurt-greet
+          path: sources/yurt-greet
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          targets: wasm32-wasip1
+          components: rust-src
+
+      - name: Cache Rust builds
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Binaryen
+        run: |
+          set -euxo pipefail
+          BINARYEN_VER=119
+          curl -sSL -o /tmp/binaryen.tar.gz \
+            "https://github.com/WebAssembly/binaryen/releases/download/version_${BINARYEN_VER}/binaryen-version_${BINARYEN_VER}-x86_64-linux.tar.gz"
+          mkdir -p "$HOME/.binaryen"
+          tar -xzf /tmp/binaryen.tar.gz -C "$HOME/.binaryen" --strip-components=1
+          echo "$HOME/.binaryen/bin" >> "$GITHUB_PATH"
+
+      - name: Install WASI SDK
+        run: |
+          set -euxo pipefail
+          WASI_SDK_VER=30.0
+          curl -sSL -o /tmp/wasi-sdk.tar.gz \
+            "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${WASI_SDK_VER%%.*}/wasi-sdk-${WASI_SDK_VER}-x86_64-linux.tar.gz"
+          mkdir -p "$HOME/.local/share"
+          tar -xzf /tmp/wasi-sdk.tar.gz -C "$HOME/.local/share"
+          mv "$HOME/.local/share"/wasi-sdk-${WASI_SDK_VER}* "$HOME/.local/share/wasi-sdk"
+          echo "WASI_SDK_PATH=$HOME/.local/share/wasi-sdk" >> "$GITHUB_ENV"
+
+      - name: Build Yurt toolchain
+        working-directory: yurtos-kernel
+        run: cargo build --release -p yurt-toolchain
+
+      - name: Build Yurt ABI archive
+        working-directory: yurtos-kernel
+        run: make -C abi lib
+
+      - name: Build Yurt Rust std
+        working-directory: yurtos-kernel
+        run: scripts/build-rust-std.sh --rust "$(rustc --version | awk '{print $2}')"
+
+      - name: Build package artifact
+        env:
+          YURT_KERNEL_ROOT: ${{ github.workspace }}/yurtos-kernel
+          YURT_ROOT: ${{ github.workspace }}/yurtos-kernel
+          YURT_RUST_STD: ${{ github.workspace }}/yurtos-kernel/abi/build/rust-std/1.95.0
+          YURT_PKG_ROOT: ${{ github.workspace }}/yurt-pkg
+          YURT_GREET_SOURCE: ${{ github.workspace }}/sources/yurt-greet
+          YURT_PKG_SOURCE: ${{ github.workspace }}/yurt-pkg
+          CC_wasm32_wasip1: ${{ github.workspace }}/yurtos-kernel/target/release/yurt-cc
+          AR_wasm32_wasip1: ${{ github.workspace }}/yurtos-kernel/target/release/yurt-ar
+          RANLIB_wasm32_wasip1: ${{ github.workspace }}/yurtos-kernel/target/release/yurt-ranlib
+          YURT_CC_ARCHIVE: ${{ github.workspace }}/yurtos-kernel/abi/build/libyurt_abi.a
+        run: |
+          set -euxo pipefail
+          "yurt-ports/ports/${{ inputs.package }}/scripts/package.sh"
+
+      - name: Publish package metadata
+        env:
+          PACKAGE: ${{ inputs.package }}
+        run: |
+          set -euxo pipefail
+          generated_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          artifact="$(ls "yurt-ports/ports/${PACKAGE}/build/dist/"*.yurtpkg)"
+          cargo run --manifest-path yurt-pkg/Cargo.toml -p yurt-repo-ci -- \
+            publish-local \
+            --repo-root yurt-packages \
+            --artifact "$artifact" \
+            --manifest "yurt-ports/ports/${PACKAGE}/yurt-pack.toml" \
+            --generated-at "$generated_at" \
+            --reject-existing
+
+      - name: Commit repository update
+        env:
+          PACKAGE: ${{ inputs.package }}
+        working-directory: yurt-packages
+        run: |
+          set -euxo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add artifacts packages index.json index.json.bundle
+          if git diff --cached --quiet; then
+            echo "No package repository changes to commit."
+            exit 0
+          fi
+          git commit -m "chore: publish ${PACKAGE} package"
+          git push
