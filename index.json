@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "index_version": 1,
+  "generated_at": "2026-05-09T00:00:00Z",
+  "expires_at": "2026-05-16T00:00:00Z",
+  "packages": {
+    "yurt-greet": {
+      "sha256": "957dce83d9b6e8f6951a9abe93030c31a7cf6cb96a6377841998cf4f0224e2c5",
+      "size": 534,
+      "url": "packages/yurt-greet.json"
+    }
+  }
+}
