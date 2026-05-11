@@ -14,6 +14,7 @@ on:
           - ncurses
           - zsh
           - clang
+          - libcxx
 
 permissions:
   contents: write
@@ -95,7 +96,7 @@ jobs:
       - name: Install WASI SDK
         run: |
           set -euxo pipefail
-          WASI_SDK_VER=30.0
+          WASI_SDK_VER=33.0
           curl -sSL -o /tmp/wasi-sdk.tar.gz \
             "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${WASI_SDK_VER%%.*}/wasi-sdk-${WASI_SDK_VER}-x86_64-linux.tar.gz"
           mkdir -p "$HOME/.local/share"

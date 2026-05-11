@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "index_version": 7,
-  "generated_at": "2026-05-11T07:24:06Z",
-  "expires_at": "2026-05-18T07:24:06Z",
+  "index_version": 8,
+  "generated_at": "2026-05-11T11:19:31Z",
+  "expires_at": "2026-05-18T11:19:31Z",
   "packages": {
     "busybox": {
       "sha256": "dfd846304721d4d0a51d88c0e4bf48e88260dfca709f1a47496901b25da1fefe",
@@ -13,6 +13,11 @@
       "sha256": "fbd2ac383553dcc05ddc82e5047b35861cda5e859498e31af4d1b1cfeae0c059",
       "size": 525,
       "url": "packages/clang.json"
+    },
+    "libcxx": {
+      "sha256": "c58c96dc798793e9de8dac4f8ee4eab85dc206a5f2f4477ec857878d63960d58",
+      "size": 527,
+      "url": "packages/libcxx.json"
     },
     "ncurses": {
       "sha256": "90145fac920be34a4657127dcc70feece80cfaa86b55542c13b4d66036e688dc",
