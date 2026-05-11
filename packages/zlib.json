@@ -1,0 +1,18 @@
+{
+  "name": "zlib",
+  "versions": [
+    {
+      "version": "1.3.1",
+      "build": "1",
+      "url": "artifacts/zlib/1.3.1/zlib-1.3.1-1.yurtpkg",
+      "sha256": "a26bb9aa98fc6e09b4dc280a2f32882b0d8aa4e695b823c60addf01028cbdf40",
+      "size": 74230,
+      "signing": {
+        "subject": "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main",
+        "issuer": "https://token.actions.githubusercontent.com"
+      },
+      "depends": [],
+      "yanked": false
+    }
+  ]
+}
