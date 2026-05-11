@@ -1,0 +1,18 @@
+{
+  "name": "openssl",
+  "versions": [
+    {
+      "version": "4.0.0",
+      "build": "yurt_0",
+      "url": "artifacts/openssl/4.0.0/openssl-4.0.0-yurt_0.yurtpkg",
+      "sha256": "799af049df26aba649521b4bc2b092b644a6b8ea20e3f1139eafdf8ba41aacb9",
+      "size": 3046832,
+      "signing": {
+        "subject": "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main",
+        "issuer": "https://token.actions.githubusercontent.com"
+      },
+      "depends": [],
+      "yanked": false
+    }
+  ]
+}

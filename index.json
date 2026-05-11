@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "index_version": 8,
-  "generated_at": "2026-05-11T11:19:31Z",
-  "expires_at": "2026-05-18T11:19:31Z",
+  "index_version": 9,
+  "generated_at": "2026-05-11T11:42:16Z",
+  "expires_at": "2026-05-18T11:42:16Z",
   "packages": {
     "busybox": {
       "sha256": "dfd846304721d4d0a51d88c0e4bf48e88260dfca709f1a47496901b25da1fefe",
@@ -23,6 +23,11 @@
       "sha256": "90145fac920be34a4657127dcc70feece80cfaa86b55542c13b4d66036e688dc",
       "size": 526,
       "url": "packages/ncurses.json"
+    },
+    "openssl": {
+      "sha256": "9484c83fd7c7e266d104488121c75e79b3cbb6362755b7e93b2c46e44bc93154",
+      "size": 527,
+      "url": "packages/openssl.json"
     },
     "pkg": {
       "sha256": "97ca8ec04cfbd3c4bd924cf967d74bcd4ee44a998321d1993dc71453efd7e73d",
