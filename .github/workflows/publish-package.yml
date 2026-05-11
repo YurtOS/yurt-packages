@@ -13,6 +13,7 @@ on:
           - busybox
           - ncurses
           - zsh
+          - clang
 
 permissions:
   contents: write
@@ -39,6 +40,14 @@ jobs:
         with:
           repository: YurtOS/yurt-pkg
           path: yurt-pkg
+          token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+
+      - name: Check out yurt-clang
+        if: inputs.package == 'clang'
+        uses: actions/checkout@v4
+        with:
+          repository: YurtOS/yurt-clang
+          path: sources/yurt-clang
           token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
 
       - name: Set up Rust
@@ -114,6 +123,7 @@ jobs:
           YURT_PKG_ROOT: ${{ github.workspace }}/yurt-pkg
           YURT_GREET_SOURCE: ${{ github.workspace }}/sources/yurt-greet
           YURT_PKG_SOURCE: ${{ github.workspace }}/yurt-pkg
+          YURT_CLANG_SOURCE: ${{ github.workspace }}/sources/yurt-clang
           CC_wasm32_wasip1: ${{ github.workspace }}/yurtos-kernel/target/release/yurt-cc
           AR_wasm32_wasip1: ${{ github.workspace }}/yurtos-kernel/target/release/yurt-ar
           RANLIB_wasm32_wasip1: ${{ github.workspace }}/yurtos-kernel/target/release/yurt-ranlib
