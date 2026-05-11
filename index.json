@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "index_version": 12,
-  "generated_at": "2026-05-11T11:56:29Z",
-  "expires_at": "2026-05-18T11:56:29Z",
+  "index_version": 13,
+  "generated_at": "2026-05-11T13:37:51.772445Z",
+  "expires_at": "2026-05-18T13:37:51.772445Z",
   "packages": {
     "busybox": {
       "sha256": "dfd846304721d4d0a51d88c0e4bf48e88260dfca709f1a47496901b25da1fefe",
@@ -30,8 +30,8 @@
       "url": "packages/openssl.json"
     },
     "pkg": {
-      "sha256": "97ca8ec04cfbd3c4bd924cf967d74bcd4ee44a998321d1993dc71453efd7e73d",
-      "size": 515,
+      "sha256": "2df23123808338a56d71fedcfc37fa5215ed140be6e6bf33bcd619c2637bbbde",
+      "size": 980,
       "url": "packages/pkg.json"
     },
     "yurt-greet": {

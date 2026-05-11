@@ -10,6 +10,7 @@ index.json
 index.json.bundle
 packages/<name>.json
 artifacts/<name>/<version>/<name>-<version>-<build>.yurtpkg
+artifacts/<name>/<version>/<name>-<version>-<build>.yurtpkg.bundle
 ```
 
 Ports live in [`YurtOS/yurt-ports`](https://github.com/YurtOS/yurt-ports).
@@ -26,6 +27,6 @@ and pushes the repository update. Re-publishing the same package
 
 For local end-to-end loops, `yurt-repo-ci publish-local` is the CI stand-in. It
 copies a built `.yurtpkg` into `artifacts/`, regenerates package metadata and
-`index.json`, and writes a placeholder `index.json.bundle` so
-`pkg --features test-fixtures update` can exercise the same repository layout.
+`index.json`, and writes placeholder bundles so `pkg --features test-fixtures`
+can exercise the same repository layout for both `update` and `install`.
 Real Sigstore bundle generation remains CI-owned.
