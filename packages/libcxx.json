@@ -3,10 +3,10 @@
   "versions": [
     {
       "version": "22.1.0",
-      "build": "yurt_0",
-      "url": "artifacts/libcxx/22.1.0/libcxx-22.1.0-yurt_0.yurtpkg",
-      "sha256": "358e91627413661e4c926eef18fe6626f9b3024776896c3f28ad536d5711e235",
-      "size": 4971732,
+      "build": "1",
+      "url": "artifacts/libcxx/22.1.0/libcxx-22.1.0-1.yurtpkg",
+      "sha256": "b42d1d58e20c3f425e88699e8d1e549f1afe74477b72873c053789180b167df9",
+      "size": 4971725,
       "signing": {
         "subject": "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main",
         "issuer": "https://token.actions.githubusercontent.com"
