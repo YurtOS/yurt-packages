@@ -52,7 +52,7 @@ jobs:
           token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@1.95.0
         with:
           targets: wasm32-wasip1,wasm32-wasip1-threads
           components: rust-src
@@ -120,7 +120,7 @@ jobs:
         env:
           YURT_KERNEL_ROOT: ${{ github.workspace }}/yurtos-kernel
           YURT_ROOT: ${{ github.workspace }}/yurtos-kernel
-          YURT_RUST_STD: ${{ github.workspace }}/yurtos-kernel/abi/build/rust-std/1.96.0
+          YURT_RUST_STD: ${{ github.workspace }}/yurtos-kernel/abi/build/rust-std/1.95.0
           YURT_PKG_ROOT: ${{ github.workspace }}/yurt-pkg
           YURT_GREET_SOURCE: ${{ github.workspace }}/sources/yurt-greet
           YURT_PKG_SOURCE: ${{ github.workspace }}/yurt-pkg
