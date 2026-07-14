@@ -7,6 +7,12 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    ignore:
+      # See note in the sibling repos: cap dtolnay/rust-toolchain below the
+      # bogus future branches (1.98/1.99/1.100) that break CI.
+      - dependency-name: "dtolnay/rust-toolchain"
+        versions:
+          - ">= 1.98"
     groups:
       actions-minor-patch:
         update-types:
