@@ -7,10 +7,6 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
-    ignore:
-      # The Rust toolchain version is a deliberate pin (tracks the repo's
-      # MSRV); bumping it breaks CI. Manage it manually.
-      - dependency-name: "dtolnay/rust-toolchain"
     groups:
       actions-minor-patch:
         update-types:
