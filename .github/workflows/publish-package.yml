@@ -113,6 +113,7 @@ jobs:
         run: make -C abi lib
 
       - name: Build Yurt Rust std
+        if: inputs.package == 'yurt-greet'
         working-directory: yurtos-kernel
         run: scripts/build-rust-std.sh --rust "$(rustc --version | awk '{print $2}')"
 
