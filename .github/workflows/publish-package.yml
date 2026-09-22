@@ -104,10 +104,19 @@ jobs:
           mv "$HOME/.local/share"/wasi-sdk-${WASI_SDK_VER}* "$HOME/.local/share/wasi-sdk"
           echo "WASI_SDK_PATH=$HOME/.local/share/wasi-sdk" >> "$GITHUB_ENV"
 
-      - name: Install Yurt guest SDK
-        uses: ./yurtos-kernel/.github/actions/cache-yurt-sdk
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
         with:
-          gh-token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+          deno-version: v2.x
+
+      - name: Install Yurt guest SDK
+        working-directory: yurtos-kernel
+        env:
+          GH_TOKEN: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+        run: |
+          set -euxo pipefail
+          scripts/install-yurt-sdk-release.sh
+          scripts/publish-yurt-sdk-github-env.sh "$PWD/target/yurt-sdk"
 
       - name: Build Yurt Rust std
         if: inputs.package == 'yurt-greet'
