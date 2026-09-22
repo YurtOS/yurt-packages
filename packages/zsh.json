@@ -18,6 +18,24 @@
         }
       ],
       "yanked": false
+    },
+    {
+      "version": "5.9.0",
+      "build": "yurt_1",
+      "url": "artifacts/zsh/5.9.0/zsh-5.9.0-yurt_1.yurtpkg",
+      "sha256": "61674b3f4a9a933d20030396b428fe1201ff3236e4de933e524d725acce2d578",
+      "size": 769646,
+      "signing": {
+        "subject": "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main",
+        "issuer": "https://token.actions.githubusercontent.com"
+      },
+      "depends": [
+        {
+          "name": "ncurses",
+          "req": "^6.5"
+        }
+      ],
+      "yanked": false
     }
   ]
 }
