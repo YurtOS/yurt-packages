@@ -107,7 +107,7 @@ jobs:
       - name: Install Yurt guest SDK
         uses: ./yurtos-kernel/.github/actions/cache-yurt-sdk
         with:
-          gh-token: ${{ secrets.YURT_TOOLCHAIN_TOKEN }}
+          gh-token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
 
       - name: Build Yurt Rust std
         if: inputs.package == 'yurt-greet'
