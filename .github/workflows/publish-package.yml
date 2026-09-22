@@ -104,13 +104,10 @@ jobs:
           mv "$HOME/.local/share"/wasi-sdk-${WASI_SDK_VER}* "$HOME/.local/share/wasi-sdk"
           echo "WASI_SDK_PATH=$HOME/.local/share/wasi-sdk" >> "$GITHUB_ENV"
 
-      - name: Build Yurt toolchain
-        working-directory: yurtos-kernel
-        run: cargo build --release -p yurt-toolchain
-
-      - name: Build Yurt ABI archive
-        working-directory: yurtos-kernel
-        run: make -C abi lib
+      - name: Install Yurt guest SDK
+        uses: ./yurtos-kernel/.github/actions/cache-yurt-sdk
+        with:
+          gh-token: ${{ secrets.YURT_TOOLCHAIN_TOKEN }}
 
       - name: Build Yurt Rust std
         if: inputs.package == 'yurt-greet'
@@ -126,10 +123,6 @@ jobs:
           YURT_GREET_SOURCE: ${{ github.workspace }}/sources/yurt-greet
           YURT_PKG_SOURCE: ${{ github.workspace }}/yurt-pkg
           YURT_CLANG_SOURCE: ${{ github.workspace }}/sources/yurt-clang
-          CC_wasm32_wasip1: ${{ github.workspace }}/yurtos-kernel/target/release/yurt-cc
-          AR_wasm32_wasip1: ${{ github.workspace }}/yurtos-kernel/target/release/yurt-ar
-          RANLIB_wasm32_wasip1: ${{ github.workspace }}/yurtos-kernel/target/release/yurt-ranlib
-          YURT_CC_ARCHIVE: ${{ github.workspace }}/yurtos-kernel/abi/build/libyurt_abi.a
         run: |
           set -euxo pipefail
           "yurt-ports/ports/${{ inputs.package }}/scripts/package.sh"
