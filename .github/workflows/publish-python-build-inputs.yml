@@ -1,0 +1,165 @@
+name: Publish Python build inputs
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Immutable yurt-packages release tag, for example python-build-inputs-v1
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out yurt-packages
+        uses: actions/checkout@v7
+        with:
+          path: yurt-packages
+          token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+
+      - name: Check out private port recipes
+        uses: actions/checkout@v7
+        with:
+          repository: YurtOS/yurt-ports
+          path: yurt-ports
+          token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+
+      - name: Check out host package builder
+        uses: actions/checkout@v7
+        with:
+          repository: YurtOS/yurt-pkg
+          ref: 50cce57128c82880ef6938e95458c6fdd3611e84
+          path: yurt-pkg
+          token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.97.1
+
+      - name: Set up CPython host
+        id: python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14.4"
+
+      - name: Install archive tools
+        run: sudo apt-get update && sudo apt-get install --yes zstd
+
+      - name: Download and verify released Yurt SDK
+        env:
+          GH_TOKEN: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/sdk-download" "$RUNNER_TEMP/guest-sdk"
+          gh release download guest-sdk-v0.0.25 \
+            --repo YurtOS/yurt-toolchain \
+            --pattern 'guest-sdk-0.0.25-linux-x86_64.tar.zst*' \
+            --dir "$RUNNER_TEMP/sdk-download"
+          cd "$RUNNER_TEMP/sdk-download"
+          sha256sum -c guest-sdk-0.0.25-linux-x86_64.tar.zst.sha256
+          echo '19a24705f83b845fc4458ea935debb6e9d5e6cd4675ff92077dab0a0ae619318  guest-sdk-0.0.25-linux-x86_64.tar.zst' | sha256sum -c -
+          zstd -dc guest-sdk-0.0.25-linux-x86_64.tar.zst | tar -xf - --strip-components=1 -C "$RUNNER_TEMP/guest-sdk"
+          test -x "$RUNNER_TEMP/guest-sdk/bin/yurt-cc"
+          test -f "$RUNNER_TEMP/guest-sdk/sysroot/lib/libc++.a"
+          {
+            echo "YURT_TOOLCHAIN_ROOT=$RUNNER_TEMP/guest-sdk"
+            echo "LIBCXX_PREFIX=$RUNNER_TEMP/guest-sdk/sysroot"
+          } >> "$GITHUB_ENV"
+
+      - name: Build CPython development prefix
+        working-directory: yurt-ports
+        env:
+          HOST_PYTHON: ${{ steps.python.outputs.python-path }}
+          NUMPY_PREFIX: ""
+          PYZMQ_PREFIX: ""
+          OPENSSL_PREFIX: ""
+          YURT_PKG_ROOT: ${{ github.workspace }}/yurt-pkg
+        run: |
+          set -euo pipefail
+          ports/cpython/scripts/package.sh
+
+      - name: Build libzmq development prefix
+        working-directory: yurt-ports
+        env:
+          YURT_PKG_ROOT: ${{ github.workspace }}/yurt-pkg
+        run: |
+          set -euo pipefail
+          ports/libzmq/scripts/package.sh
+
+      - name: Export Python development inputs
+        working-directory: yurt-ports
+        run: |
+          set -euo pipefail
+          scripts/package-python-build-inputs.sh \
+            --cpython-prefix ports/cpython/build/stage/usr/local \
+            --libzmq-prefix ports/libzmq/build/stage/usr \
+            --sdk-root "$YURT_TOOLCHAIN_ROOT" \
+            --sdk-release guest-sdk-v0.0.25-linux-x86_64 \
+            --sdk-sha256 19a24705f83b845fc4458ea935debb6e9d5e6cd4675ff92077dab0a0ae619318 \
+            --python-version 3.14.4 \
+            --output ports/cpython/build/python-build-inputs.tar.zst
+          (cd ports/cpython/build && sha256sum -c python-build-inputs.tar.zst.sha256)
+          bash tests/cpython_yurt_userland_test.sh
+
+      - name: Build and verify host yurt-pack
+        working-directory: yurt-pkg
+        run: |
+          set -euo pipefail
+          cargo build --locked --release -p yurt-pack
+          mkdir -p "$RUNNER_TEMP/yurt-pack/bin"
+          install -m 0755 target/release/yurt-pack "$RUNNER_TEMP/yurt-pack/bin/yurt-pack"
+          "$RUNNER_TEMP/yurt-pack/bin/yurt-pack" --help
+          tar --format=posix --sort=name --mtime='UTC 1970-01-01' \
+            --owner=0 --group=0 --numeric-owner \
+            -C "$RUNNER_TEMP" -I 'zstd -19' \
+            -cf "$RUNNER_TEMP/yurt-pack-linux-x86_64.tar.zst" yurt-pack
+          cd "$RUNNER_TEMP"
+          sha256sum yurt-pack-linux-x86_64.tar.zst > yurt-pack-linux-x86_64.tar.zst.sha256
+
+      - name: Publish immutable build-input release
+        working-directory: yurt-packages
+        env:
+          GH_TOKEN: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^python-build-inputs-v[0-9]+$ ]]; then
+            echo "error: release_tag must match python-build-inputs-vN" >&2
+            exit 2
+          fi
+          gh release create "$RELEASE_TAG" \
+            "$RUNNER_TEMP/sdk-download/guest-sdk-0.0.25-linux-x86_64.tar.zst" \
+            "$RUNNER_TEMP/sdk-download/guest-sdk-0.0.25-linux-x86_64.tar.zst.sha256" \
+            "$RUNNER_TEMP/yurt-pack-linux-x86_64.tar.zst" \
+            "$RUNNER_TEMP/yurt-pack-linux-x86_64.tar.zst.sha256" \
+            "$GITHUB_WORKSPACE/yurt-ports/ports/cpython/build/python-build-inputs.tar.zst" \
+            "$GITHUB_WORKSPACE/yurt-ports/ports/cpython/build/python-build-inputs.tar.zst.sha256" \
+            --repo YurtOS/yurt-packages \
+            --title "Python build inputs $RELEASE_TAG" \
+            --notes "Verified CPython/libzmq development inputs, released Yurt SDK, and host yurt-pack builder for public yurt-pypi builds."
+
+      - name: Verify anonymous release downloads
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/anonymous-downloads"
+          base_url="https://github.com/YurtOS/yurt-packages/releases/download/$RELEASE_TAG"
+          curl --fail --silent --show-error --location \
+            "$base_url/guest-sdk-0.0.25-linux-x86_64.tar.zst" \
+            --output "$RUNNER_TEMP/anonymous-downloads/guest-sdk.tar.zst"
+          cmp "$RUNNER_TEMP/anonymous-downloads/guest-sdk.tar.zst" \
+            "$RUNNER_TEMP/sdk-download/guest-sdk-0.0.25-linux-x86_64.tar.zst"
+          curl --fail --silent --show-error --location \
+            "$base_url/yurt-pack-linux-x86_64.tar.zst" \
+            --output "$RUNNER_TEMP/anonymous-downloads/yurt-pack.tar.zst"
+          cmp "$RUNNER_TEMP/anonymous-downloads/yurt-pack.tar.zst" \
+            "$RUNNER_TEMP/yurt-pack-linux-x86_64.tar.zst"
+          curl --fail --silent --show-error --location \
+            "$base_url/python-build-inputs.tar.zst" \
+            --output "$RUNNER_TEMP/anonymous-downloads/python-build-inputs.tar.zst"
+          cmp "$RUNNER_TEMP/anonymous-downloads/python-build-inputs.tar.zst" \
+            "$GITHUB_WORKSPACE/yurt-ports/ports/cpython/build/python-build-inputs.tar.zst"

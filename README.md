@@ -25,6 +25,13 @@ this repository. The workflow checks out the source-light port from
 and pushes the repository update. Re-publishing the same package
 `version`/`build` is expected to fail before repository files are modified.
 
+Python development inputs use the separate manual `Publish Python build inputs`
+workflow. It builds fresh CPython and libzmq prefixes with the released Yurt
+SDK, packages them with their file and symlink hashes, and publishes them with
+the exact SDK archive and host `yurt-pack` binary in a versioned GitHub release.
+That workflow keeps private checkout credentials in yurt-packages Actions;
+public `yurt-pypi` builds consume the published bytes anonymously.
+
 For local end-to-end loops, `yurt-repo-ci publish-local` is the CI stand-in. It
 copies a built `.yurtpkg` into `artifacts/`, regenerates package metadata and
 `index.json`, and writes placeholder bundles so `pkg --features test-fixtures`
