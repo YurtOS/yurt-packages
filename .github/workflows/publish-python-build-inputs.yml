@@ -99,7 +99,7 @@ jobs:
             --sdk-root "$YURT_TOOLCHAIN_ROOT" \
             --sdk-release guest-sdk-v0.0.25-linux-x86_64 \
             --sdk-sha256 19a24705f83b845fc4458ea935debb6e9d5e6cd4675ff92077dab0a0ae619318 \
-            --python-version 3.14.4 \
+            --python-version 3.14.7 \
             --output ports/cpython/build/python-build-inputs.tar.zst
           (cd ports/cpython/build && sha256sum -c python-build-inputs.tar.zst.sha256)
           bash tests/cpython_yurt_userland_test.sh
