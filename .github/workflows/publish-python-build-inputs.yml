@@ -20,6 +20,7 @@ jobs:
         with:
           path: yurt-packages
           token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+          persist-credentials: false
 
       - name: Check out private port recipes
         uses: actions/checkout@v7
@@ -27,6 +28,7 @@ jobs:
           repository: YurtOS/yurt-ports
           path: yurt-ports
           token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+          persist-credentials: false
 
       - name: Check out host package builder
         uses: actions/checkout@v7
@@ -35,6 +37,7 @@ jobs:
           ref: 50cce57128c82880ef6938e95458c6fdd3611e84
           path: yurt-pkg
           token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+          persist-credentials: false
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@1.97.1
@@ -43,7 +46,7 @@ jobs:
         id: python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.14.4"
+          python-version: "3.14.7"
 
       - name: Install archive tools
         run: sudo apt-get update && sudo apt-get install --yes zstd
@@ -63,10 +66,10 @@ jobs:
           echo '19a24705f83b845fc4458ea935debb6e9d5e6cd4675ff92077dab0a0ae619318  guest-sdk-0.0.25-linux-x86_64.tar.zst' | sha256sum -c -
           zstd -dc guest-sdk-0.0.25-linux-x86_64.tar.zst | tar -xf - --strip-components=1 -C "$RUNNER_TEMP/guest-sdk"
           test -x "$RUNNER_TEMP/guest-sdk/bin/yurt-cc"
-          test -f "$RUNNER_TEMP/guest-sdk/sysroot/lib/libc++.a"
+          test -f "$RUNNER_TEMP/guest-sdk/musl/sysroot/lib/libc++.a"
           {
             echo "YURT_TOOLCHAIN_ROOT=$RUNNER_TEMP/guest-sdk"
-            echo "LIBCXX_PREFIX=$RUNNER_TEMP/guest-sdk/sysroot"
+            echo "LIBCXX_PREFIX=$RUNNER_TEMP/guest-sdk/musl/sysroot"
           } >> "$GITHUB_ENV"
 
       - name: Build CPython development prefix
@@ -148,18 +151,22 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/anonymous-downloads"
           base_url="https://github.com/YurtOS/yurt-packages/releases/download/$RELEASE_TAG"
-          curl --fail --silent --show-error --location \
-            "$base_url/guest-sdk-0.0.25-linux-x86_64.tar.zst" \
-            --output "$RUNNER_TEMP/anonymous-downloads/guest-sdk.tar.zst"
-          cmp "$RUNNER_TEMP/anonymous-downloads/guest-sdk.tar.zst" \
-            "$RUNNER_TEMP/sdk-download/guest-sdk-0.0.25-linux-x86_64.tar.zst"
-          curl --fail --silent --show-error --location \
-            "$base_url/yurt-pack-linux-x86_64.tar.zst" \
-            --output "$RUNNER_TEMP/anonymous-downloads/yurt-pack.tar.zst"
-          cmp "$RUNNER_TEMP/anonymous-downloads/yurt-pack.tar.zst" \
-            "$RUNNER_TEMP/yurt-pack-linux-x86_64.tar.zst"
-          curl --fail --silent --show-error --location \
-            "$base_url/python-build-inputs.tar.zst" \
-            --output "$RUNNER_TEMP/anonymous-downloads/python-build-inputs.tar.zst"
-          cmp "$RUNNER_TEMP/anonymous-downloads/python-build-inputs.tar.zst" \
-            "$GITHUB_WORKSPACE/yurt-ports/ports/cpython/build/python-build-inputs.tar.zst"
+          cd "$RUNNER_TEMP/anonymous-downloads"
+          for asset in \
+            guest-sdk-0.0.25-linux-x86_64.tar.zst \
+            yurt-pack-linux-x86_64.tar.zst \
+            python-build-inputs.tar.zst; do
+            curl --fail --silent --show-error --location \
+              "$base_url/$asset" --output "$asset"
+            curl --fail --silent --show-error --location \
+              "$base_url/$asset.sha256" --output "$asset.sha256"
+            case "$asset" in
+              guest-sdk-*) source="$RUNNER_TEMP/sdk-download/$asset" ;;
+              yurt-pack-*) source="$RUNNER_TEMP/$asset" ;;
+              python-build-inputs.tar.zst)
+                source="$GITHUB_WORKSPACE/yurt-ports/ports/cpython/build/$asset"
+                ;;
+            esac
+            cmp "$asset" "$source"
+            sha256sum --check "$asset.sha256"
+          done
