@@ -30,6 +30,14 @@ on:
 permissions:
   contents: write
 
+# Every run commits the package index to main. One run at a time, so a
+# second dispatch starts from the first one's commit instead of racing its
+# push. (A group holds one pending run: a third dispatch while one waits
+# replaces the waiting one.)
+concurrency:
+  group: publish-package
+  cancel-in-progress: false
+
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -63,6 +71,8 @@ jobs:
           # The port pins a yurt-go commit and exports it with git archive.
           fetch-depth: 0
           token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+          # Read once here; don't leave the token in the clone the build reads.
+          persist-credentials: false
 
       - name: Set up bootstrap Go
         if: inputs.package == 'gh' || inputs.package == 'go'
