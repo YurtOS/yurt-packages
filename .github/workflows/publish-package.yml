@@ -17,9 +17,26 @@ on:
           - libcxx
           - ca-certificates
           - git
+          - openssl
+          - curl
+          - jq
+          - sqlite
+          - gettext
+          - xz
+          - rtk
+          - gh
+          - go
 
 permissions:
   contents: write
+
+# Every run commits the package index to main. One run at a time, so a
+# second dispatch starts from the first one's commit instead of racing its
+# push. (A group holds one pending run: a third dispatch while one waits
+# replaces the waiting one.)
+concurrency:
+  group: publish-package
+  cancel-in-progress: false
 
 jobs:
   publish:
@@ -44,6 +61,25 @@ jobs:
           repository: YurtOS/yurt-pkg
           path: yurt-pkg
           token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+
+      - name: Check out yurt-go
+        if: inputs.package == 'gh' || inputs.package == 'go'
+        uses: actions/checkout@v7
+        with:
+          repository: YurtOS/yurt-go
+          path: sources/yurt-go
+          # The port pins a yurt-go commit and exports it with git archive.
+          fetch-depth: 0
+          token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+          # Read once here; don't leave the token in the clone the build reads.
+          persist-credentials: false
+
+      - name: Set up bootstrap Go
+        if: inputs.package == 'gh' || inputs.package == 'go'
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.27.1"
+          cache: false
 
       - name: Check out yurt-clang
         if: inputs.package == 'clang'
@@ -125,15 +161,20 @@ jobs:
         working-directory: yurtos-kernel
         run: scripts/build-rust-std.sh --rust "$(rustc --version | awk '{print $2}')"
 
-      - name: Build git dependency stages
-        if: inputs.package == 'git'
+      - name: Build dependency stages
+        if: inputs.package == 'curl' || inputs.package == 'git'
         env:
           YURT_KERNEL_ROOT: ${{ github.workspace }}/yurtos-kernel
+          PACKAGE: ${{ inputs.package }}
         run: |
           set -euxo pipefail
-          # git links zlib, OpenSSL and libcurl statically from these ports'
-          # staged outputs; curl itself needs the zlib and OpenSSL stages.
-          for port in zlib openssl curl; do
+          # curl and git link these ports' staged static libraries; git's
+          # curl stage itself needs the zlib and OpenSSL stages.
+          case "$PACKAGE" in
+            curl) ports="zlib openssl" ;;
+            git) ports="zlib openssl curl" ;;
+          esac
+          for port in $ports; do
             "yurt-ports/ports/${port}/scripts/build.sh"
           done
 
@@ -146,6 +187,7 @@ jobs:
           YURT_GREET_SOURCE: ${{ github.workspace }}/sources/yurt-greet
           YURT_PKG_SOURCE: ${{ github.workspace }}/yurt-pkg
           YURT_CLANG_SOURCE: ${{ github.workspace }}/sources/yurt-clang
+          YURT_GO_SOURCE: ${{ github.workspace }}/sources/yurt-go
         run: |
           set -euxo pipefail
           "yurt-ports/ports/${{ inputs.package }}/scripts/package.sh"
