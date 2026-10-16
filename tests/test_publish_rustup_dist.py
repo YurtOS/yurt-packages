@@ -15,10 +15,11 @@ MUTATING = ("release delete", "release create", "release upload")
 
 GH_SHIM = """#!/usr/bin/env bash
 echo "$*" >> "$GH_LOG"
+echo "${GH_TOKEN:-}" >> "$GH_LOG.tok"
 case "$1 $2" in
   "release download")
     while [ $# -gt 0 ]; do [ "$1" = -D ] && dir=$2; shift; done
-    echo '{"release": {"rust_version": "1.99.0", "revision": "0.0.1"}}' > "$dir/release-manifest.json"
+    echo '{"release": {"rust_version": "1.99.0", "revision": "'"${FAKE_REVISION:-0.0.1}"'"}}' > "$dir/release-manifest.json"
     [ -z "${FAKE_ON_DOWNLOAD:-}" ] || bash "$FAKE_ON_DOWNLOAD" ;;
   "release view") [ -e "$GH_STATE/$3" ] ;;
   "release delete") rm -f "$GH_STATE/$3" ;;
@@ -32,7 +33,9 @@ p = argparse.ArgumentParser()
 for a in ("release-dir", "site", "components", "date", "base-url", "producer-host"):
     p.add_argument("--" + a, required=True)
 a = p.parse_args()
+import os
 open(pathlib.Path(a.site).parent / "emit.log", "w").write(" ".join(sys.argv[1:]))
+open(pathlib.Path(a.site).parent / "emit.tok", "w").write(os.environ.get("GH_TOKEN", "") + os.environ.get("GITHUB_TOKEN", ""))
 dist = pathlib.Path(a.site) / "dist"
 (dist / a.date).mkdir(parents=True)
 for d in (dist, dist / a.date):
@@ -44,6 +47,7 @@ pathlib.Path(a.components).mkdir(parents=True, exist_ok=True)
 
 CHECKER = """import os, pathlib, sys
 open(pathlib.Path(os.environ["GH_LOG"]).parent / "check.log", "w").write(" ".join(sys.argv[1:]))
+open(pathlib.Path(os.environ["GH_LOG"]).parent / "check.tok", "w").write(os.environ.get("GH_TOKEN", "") + os.environ.get("GITHUB_TOKEN", ""))
 sys.exit(1 if os.environ.get("FAKE_CHECKER_FAIL") else 0)
 """
 
@@ -74,6 +78,8 @@ class PublishRustupDist(unittest.TestCase):
         git("add", ".", cwd=self.tooling)
         git("commit", "-m", "tooling", cwd=self.tooling)
         self.tooling_sha = git("rev-parse", "HEAD", cwd=self.tooling)
+        self.tmpdir = self.root / "tmp"
+        self.tmpdir.mkdir()
         self.bin, self.state = self.root / "bin", self.root / "state"
         self.bin.mkdir()
         self.state.mkdir()
@@ -85,7 +91,8 @@ class PublishRustupDist(unittest.TestCase):
             os.environ, PATH=f"{self.bin}:{os.environ['PATH']}", GH_LOG=str(self.log), GH_STATE=str(self.state),
             RUST_RELEASE=RELEASE, PUBLISH_DATE=DATE, PRODUCER_HOST="x86_64-unknown-linux-gnu", TOOLING_REF="main",
             YURT_RUST_TOOLING_DIR=str(self.tooling), YURT_SITE_DIR=str(self.site), PAGES_BRANCH="main",
-            WORK_DIR=str(self.root / "work"),
+            WORK_DIR=str(self.root / "scratch"), GH_TOKEN="secret-token", GITHUB_TOKEN="secret-github",
+            TMPDIR=str(self.tmpdir),
         )
 
     def clone(self, name):
@@ -148,20 +155,22 @@ class PublishRustupDist(unittest.TestCase):
         self.assertEqual(provenance["tooling_sha"], self.tooling_sha)
         self.assertTrue((probe / f"dist/channel-rust-{VERSION}.toml").exists())
 
+    def assert_refused_after_download(self, result):
+        """The script got past validation and downloaded, then refused without touching any release."""
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("new date", result.stderr)
+        self.assertEqual(self.verbs()[0], "release download")
+        self.assertFalse(set(self.verbs()) & set(MUTATING))
+
     def test_published_manifest_and_existing_release_refuses(self):
         self.land_manifest()
         (self.state / TAG).touch()
-        result = self.run_script()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("new date", result.stderr)
-        self.assertFalse(set(self.verbs()) & set(MUTATING))
+        self.assert_refused_after_download(self.run_script())
         self.assertTrue((self.state / TAG).exists())
 
     def test_published_manifest_without_release_never_recreates_assets(self):
         self.land_manifest()
-        result = self.run_script()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertFalse(set(self.verbs()) & set(MUTATING))
+        self.assert_refused_after_download(self.run_script())
 
     def test_existing_release_without_manifest_is_deleted_and_recreated(self):
         (self.state / TAG).touch()
@@ -183,23 +192,56 @@ class PublishRustupDist(unittest.TestCase):
                 """
             )
         )
-        result = self.run_script(FAKE_ON_DOWNLOAD=str(hook))
-        self.assertNotEqual(result.returncode, 0)
-        self.assertFalse(set(self.verbs()) & set(MUTATING))
+        self.assert_refused_after_download(self.run_script(FAKE_ON_DOWNLOAD=str(hook)))
         self.assertTrue((self.state / TAG).exists())
 
     def test_checker_failure_commits_no_manifest(self):
         before = self.remote_head()
         result = self.run_script(FAKE_CHECKER_FAIL="1")
         self.assertNotEqual(result.returncode, 0)
+        self.assertIn("release upload", self.verbs())
+        self.assertTrue((self.root / "check.log").exists())
         self.assertEqual(self.remote_head(), before)
+        self.assertEqual(git("rev-parse", "HEAD", cwd=self.site), git("rev-parse", "origin/main", cwd=self.site))
 
     def test_upload_failure_commits_no_manifest_and_skips_checker(self):
         before = self.remote_head()
         result = self.run_script(FAKE_UPLOAD_FAIL="1")
         self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.verbs()[-1], "release upload")
         self.assertEqual(self.remote_head(), before)
         self.assertFalse((self.root / "check.log").exists())
+
+    def test_startup_crash_does_not_look_like_a_refusal(self):
+        result = self.run_script(YURT_RUST_TOOLING_DIR=str(self.root / "missing"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.calls(), [])
+        self.assertNotIn("new date", result.stderr)
+
+    def test_token_reaches_gh_only_not_tooling(self):
+        self.assertEqual(self.run_script().returncode, 0)
+        self.assertEqual(set((self.root / "gh.log.tok").read_text().split()), {"secret-token"})
+        self.assertEqual((self.root / "work" / "emit.tok").read_text(), "")
+        self.assertEqual((self.root / "check.tok").read_text(), "")
+
+    def test_tag_revision_must_match_release_manifest(self):
+        result = self.run_script(FAKE_REVISION="0.0.2")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("revision", result.stderr)
+        self.assertEqual(self.verbs(), ["release download"])
+
+    def test_work_dir_must_be_empty_or_absent(self):
+        busy = self.root / "busy"
+        busy.mkdir()
+        (busy / "stale").write_text("x")
+        result = self.run_script(WORK_DIR=str(busy))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("WORK_DIR", result.stderr)
+        self.assertEqual(self.calls(), [])
+
+    def test_unset_work_dir_scratch_is_removed(self):
+        self.assertEqual(self.run_script(WORK_DIR=None).returncode, 0)
+        self.assertEqual(list(self.tmpdir.iterdir()), [])
 
 
 if __name__ == "__main__":
