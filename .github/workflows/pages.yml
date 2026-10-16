@@ -1,0 +1,38 @@
+name: Deploy rustup dist pages
+
+on:
+  push:
+    branches: [main]
+    paths: ["dist/**", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Stage rustup dist
+        run: |
+          mkdir _site
+          printf '%s\n' '<!doctype html><title>Yurt rustup dist</title><h1>Yurt rustup dist</h1>' > _site/index.html
+          [[ ! -d dist ]] || cp -R dist _site/
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -30,3 +30,41 @@ copies a built `.yurtpkg` into `artifacts/`, regenerates package metadata and
 `index.json`, and writes placeholder bundles so `pkg --features test-fixtures`
 can exercise the same repository layout for both `update` and `install`.
 Real Sigstore bundle generation remains CI-owned.
+
+## Rustup dist
+
+This repository also serves the static dist server that stock `rustup` uses to
+install the patched Yurt Rust toolchain (issue
+[YurtOS/yurt-rust#66](https://github.com/YurtOS/yurt-rust/issues/66)).
+
+- Component tarballs (`<package>-<X.Y.Z>-<target>.tar.gz`) are assets of the
+  release `rustup-<X.Y.Z>-<date>` in this repository. They are never committed.
+- Manifests are committed under `dist/` and served from GitHub Pages at
+  `<pages root>/dist/`:
+
+  ```text
+  dist/channel-rust-<X.Y.Z>.toml(.sha256)            moving manifest for the channel
+  dist/<date>/channel-rust-<X.Y.Z>.toml(.sha256)     immutable, pinnable as <X.Y.Z>-<date>
+  dist/<date>/yurt-release-manifest.json             provenance, including tooling_sha
+  ```
+
+To publish, run the manual `Publish Rustup Dist` workflow with:
+
+| Input | Meaning |
+| --- | --- |
+| `rust_release` | yurt-rust release tag, `rust-vX.Y.Z-A.B.C` |
+| `tooling_ref` | yurt-rust ref with the emitter and checker (default `main`; independent of the release tag) |
+| `date` | `YYYY-MM-DD`, empty means today (UTC) |
+| `producer_host` | host whose archive supplies the guest `std` (default `x86_64-unknown-linux-gnu`) |
+
+All logic is in `tools/publish_rustup_dist.sh`. It uploads the components, checks
+that every manifest URL resolves to its declared sha256, and only then commits
+the manifests. A failed upload or check publishes no manifest. If the release
+`rustup-<X.Y.Z>-<date>` exists and a manifest for that date is already
+published, the run refuses; use a new date. A release left over from a failed
+run (no published manifest) is deleted and recreated. Runs are serialized by the
+`rustup-dist-publish` concurrency group.
+
+Clients use `yurt-rustup-init.sh` from the `yurt-rust` repository. It reads its
+pins file `scripts/rustup-init.pins` relative to its own location, so run it
+from a `yurt-rust` checkout; do not `curl | bash` the script alone.
