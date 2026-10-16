@@ -65,6 +65,28 @@ published, the run refuses; use a new date. A release left over from a failed
 run (no published manifest) is deleted and recreated. Runs are serialized by the
 `rustup-dist-publish` concurrency group.
 
+### Setup and access
+
+- `PACKAGE_PUBLISH_TOKEN` (repository secret) needs read access to the private
+  `YurtOS/yurt-rust` (contents and releases: the tooling checkout and
+  `gh release download`) and write access to `YurtOS/yurt-packages` (contents and
+  releases: committing manifests, creating releases and uploading assets).
+  Its push to `main` is what triggers `pages.yml`; a push made with the default
+  `GITHUB_TOKEN` would not.
+- GitHub Pages must be enabled for this repository with source "GitHub Actions"
+  before `pages.yml` can deploy. For the `YurtOS` organization and this
+  repository the default Pages root, which is what users pass as `--dist-root`,
+  is `https://yurtos.github.io/yurt-packages`. If the organization uses a custom
+  Pages domain, the root is that domain plus `/yurt-packages` instead; confirm it
+  under Settings > Pages.
+- The acceptance workflow in `yurt-rust` uploads about 1 GB of artifacts per run
+  (see its README).
+- Privacy: yurt-rust is private, but publishing through stock rustup makes the
+  patched toolchain binaries public release assets of `YurtOS/yurt-packages` and
+  publishes yurt-rust's git SHA, release tag and asset names, sizes and hashes in
+  `dist/<date>/yurt-release-manifest.json`; this was decided by hosting the dist
+  under `yurt-packages`.
+
 Clients use `yurt-rustup-init.sh` from the `yurt-rust` repository. It reads its
 pins file `scripts/rustup-init.pins` relative to its own location, so run it
 from a `yurt-rust` checkout; do not `curl | bash` the script alone.

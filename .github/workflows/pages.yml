@@ -1,5 +1,9 @@
 name: Deploy rustup dist pages
 
+# Triggered by the PACKAGE_PUBLISH_TOKEN (PAT) push of the manifests to main made
+# by publish-rustup-dist.yml. A push made with the default GITHUB_TOKEN would not
+# trigger this workflow, which is why that workflow commits with the PAT.
+# Pages must be enabled with source "GitHub Actions" (see README) before this can deploy.
 on:
   push:
     branches: [main]

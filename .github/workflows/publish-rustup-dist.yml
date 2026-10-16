@@ -27,6 +27,10 @@ on:
           - aarch64-unknown-linux-gnu
           - aarch64-apple-darwin
 
+# PACKAGE_PUBLISH_TOKEN needs read on private YurtOS/yurt-rust (contents and
+# releases: tooling checkout, `gh release download`) and write on
+# YurtOS/yurt-packages (contents and releases). See the README. Its push to main
+# is also what triggers pages.yml; a GITHUB_TOKEN push would not.
 permissions:
   contents: read  # every write goes through PACKAGE_PUBLISH_TOKEN
 
