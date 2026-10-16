@@ -28,7 +28,7 @@ on:
           - aarch64-apple-darwin
 
 permissions:
-  contents: write
+  contents: read  # every write goes through PACKAGE_PUBLISH_TOKEN
 
 concurrency:
   group: rustup-dist-publish
@@ -40,14 +40,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out yurt-packages (Pages branch)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: main
           path: site
           token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
 
       - name: Check out yurt-rust tooling
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: YurtOS/yurt-rust
           ref: ${{ inputs.tooling_ref }}
@@ -55,7 +55,7 @@ jobs:
           token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
           persist-credentials: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
 
