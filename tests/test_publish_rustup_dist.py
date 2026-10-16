@@ -240,7 +240,7 @@ class PublishRustupDist(unittest.TestCase):
         stored = [f for f in (self.site / ".git").rglob("*") if f.is_file() and any(n in f.read_bytes() for n in needles)]
         self.assertEqual(stored, [])
         pushes = [line for line in (self.root / "push.env").read_text().splitlines() if line != "||"]
-        self.assertEqual(pushes, [f"1|http.https://github.com/.extraheader|{AUTH_HEADER}"])
+        self.assertEqual(pushes, [f"|http.https://github.com/.extraheader|{AUTH_HEADER}"])
 
     def test_tag_revision_must_match_release_manifest(self):
         result = self.run_script(FAKE_REVISION="0.0.2")

@@ -100,5 +100,13 @@ python3 "$TOOLING_DIR/scripts/verify_rustup_dist_urls.py" --dist "$SITE/dist" --
 git -C "$SITE" add dist
 git -C "$SITE" -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
   commit --quiet -m "chore: publish rustup dist $VERSION $DATE"
-git -C "$SITE" push origin "HEAD:$PAGES_BRANCH"
+# The checkout stores no credentials; the token reaches git only through this one push's environment
+# (not argv, not .git/config). The refresh fetch is anonymous: the Pages branch lives in a public repo.
+if [[ -n "$GH_AUTH_TOKEN" ]]; then
+  GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" \
+    GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_AUTH_TOKEN" | base64 | tr -d '\n')" \
+    git -C "$SITE" push origin "HEAD:$PAGES_BRANCH"
+else
+  git -C "$SITE" push origin "HEAD:$PAGES_BRANCH"
+fi
 echo "published $TAG"
