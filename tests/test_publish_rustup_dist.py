@@ -1,4 +1,5 @@
 """Tests for tools/publish_rustup_dist.sh using a gh shim, a local bare Pages remote and stub tooling."""
+import base64
 import json
 import os
 import subprocess
@@ -11,6 +12,7 @@ SCRIPT = Path(__file__).resolve().parent.parent / "tools" / "publish_rustup_dist
 RELEASE, DATE, VERSION = "rust-v1.99.0-0.0.1", "2026-10-20", "1.99.0"
 TAG = f"rustup-{VERSION}-{DATE}"
 PUBLISHED = f"dist/{DATE}/channel-rust-{VERSION}.toml"
+AUTH_HEADER = "AUTHORIZATION: basic " + base64.b64encode(b"x-access-token:secret-token").decode()
 MUTATING = ("release delete", "release create", "release upload")
 
 GH_SHIM = """#!/usr/bin/env bash
@@ -35,6 +37,10 @@ for a in ("release-dir", "site", "components", "date", "base-url", "producer-hos
 a = p.parse_args()
 import os
 open(pathlib.Path(a.site).parent / "emit.log", "w").write(" ".join(sys.argv[1:]))
+import base64
+needles = (b"secret-token", base64.b64encode(b"x-access-token:secret-token"))
+leaks = [str(f) for f in (pathlib.Path(a.site) / ".git").rglob("*") if f.is_file() and any(n in f.read_bytes() for n in needles)]
+open(pathlib.Path(a.site).parent / "emit.leak", "w").write(chr(10).join(leaks))
 open(pathlib.Path(a.site).parent / "emit.tok", "w").write(os.environ.get("GH_TOKEN", "") + os.environ.get("GITHUB_TOKEN", ""))
 dist = pathlib.Path(a.site) / "dist"
 (dist / a.date).mkdir(parents=True)
@@ -67,6 +73,9 @@ class PublishRustupDist(unittest.TestCase):
         self.other = self.clone("other")
         (self.other / "README").write_text("x\n")
         self.commit_push(self.other, "init")
+        hook = self.remote / "hooks" / "pre-receive"
+        hook.write_text(f'#!/bin/sh\necho "${{GIT_CONFIG_COUNT:-}}|${{GIT_CONFIG_KEY_0:-}}|${{GIT_CONFIG_VALUE_0:-}}" >> {self.root}/push.env\n')
+        hook.chmod(0o755)
         self.site = self.root / "work" / "site"
         self.site.parent.mkdir()
         git("clone", str(self.remote), str(self.site), cwd=self.root)
@@ -223,6 +232,15 @@ class PublishRustupDist(unittest.TestCase):
         self.assertEqual(set((self.root / "gh.log.tok").read_text().split()), {"secret-token"})
         self.assertEqual((self.root / "work" / "emit.tok").read_text(), "")
         self.assertEqual((self.root / "check.tok").read_text(), "")
+
+    def test_token_is_never_stored_in_the_site_checkout_and_authenticates_only_the_push(self):
+        self.assertEqual(self.run_script().returncode, 0)
+        self.assertEqual((self.root / "work" / "emit.leak").read_text(), "")
+        needles = (b"secret-token", AUTH_HEADER.split()[-1].encode())
+        stored = [f for f in (self.site / ".git").rglob("*") if f.is_file() and any(n in f.read_bytes() for n in needles)]
+        self.assertEqual(stored, [])
+        pushes = [line for line in (self.root / "push.env").read_text().splitlines() if line != "||"]
+        self.assertEqual(pushes, [f"1|http.https://github.com/.extraheader|{AUTH_HEADER}"])
 
     def test_tag_revision_must_match_release_manifest(self):
         result = self.run_script(FAKE_REVISION="0.0.2")
