@@ -34,6 +34,7 @@ PHASE="${1:-}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STAGE="$HERE/rustup_dist_stage.py"
 readonly RUST_REPO=YurtOS/yurt-rust PACKAGES_REPO=YurtOS/yurt-packages PAGES_BRANCH=main
+readonly SITE_URL="https://github.com/$PACKAGES_REPO"
 
 # Tokens move into unexported variables: gh gets the phase's token, git push gets PUSH_TOKEN, and
 # nothing else (python, the emitter, git fetch) sees either.
@@ -87,11 +88,24 @@ require_site_checkout() {
     die "YURT_SITE_DIR is not the top directory of a git checkout"
 }
 
+# Every git command on the site runs with hooks disabled: nothing in the checkout's .git/hooks runs,
+# in particular not around the push, whose environment carries the PAT.
+site_cmd() {
+  git -C "$SITE" -c core.hooksPath=/dev/null "$@"
+}
+
+# push sends the PAT, so the checkout must be of the real repository (as actions/checkout leaves it).
+require_site_origin() {
+  local origin
+  origin="$(git -C "$SITE" config --get remote.origin.url 2> /dev/null)" || origin=""
+  [[ "$origin" == "$SITE_URL" || "$origin" == "$SITE_URL.git" ]] || die "the origin of YURT_SITE_DIR is not $SITE_URL"
+}
+
 reset_site() {
-  git -C "$SITE" fetch --quiet origin "$PAGES_BRANCH"
-  git -C "$SITE" checkout --quiet -B "$PAGES_BRANCH" "origin/$PAGES_BRANCH"
-  git -C "$SITE" reset --quiet --hard "origin/$PAGES_BRANCH"
-  git -C "$SITE" clean --quiet -fdx
+  site_cmd fetch --quiet origin "$PAGES_BRANCH"
+  site_cmd checkout --quiet -B "$PAGES_BRANCH" "origin/$PAGES_BRANCH"
+  site_cmd reset --quiet --hard "origin/$PAGES_BRANCH"
+  site_cmd clean --quiet -fdx
 }
 
 phase_plan() {
@@ -213,20 +227,21 @@ phase_publish() {
 }
 
 site_git() {
-  git -C "$SITE" -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" "$@"
+  site_cmd -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" "$@"
 }
 
 # The checkout stores no credentials; the token reaches git only through the push's environment
 # (not argv, not .git/config). Fetches are anonymous: the Pages branch lives in a public repo.
+# The push goes to the literal repository URL, not to whatever origin names, with hooks disabled.
 push_site() {
   GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" \
     GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$PUSH_AUTH_TOKEN" | base64 | tr -d '\n')" \
-    git -C "$SITE" push --quiet origin "HEAD:$PAGES_BRANCH"
+    site_cmd push --quiet "$SITE_URL" "HEAD:$PAGES_BRANCH"
 }
 
 stage_five() {
   local expected staged modes
-  git -C "$SITE" add -A
+  site_cmd add -A
   expected="$(printf '%s\n' "${FIVE[@]}" | LC_ALL=C sort)"
   staged="$(git -C "$SITE" diff --cached --name-only --no-renames | LC_ALL=C sort)"
   [[ "$staged" == "$expected" ]] || die "the staged change is not exactly the five dist paths"
@@ -242,6 +257,7 @@ phase_push() {
   [[ -n "$PUSH_AUTH_TOKEN" ]] || die "PUSH_TOKEN is required"
   SITE="$YURT_SITE_DIR"
   require_site_checkout
+  require_site_origin
   WORK="$(mktemp -d "${TMPDIR:-/tmp}/rustup-dist.XXXXXX")"
   trap 'reset_site || true; rm -rf "$WORK"' EXIT
 
