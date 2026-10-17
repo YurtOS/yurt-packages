@@ -93,7 +93,7 @@ data = json.load(open(path))
 data["tooling_sha"] = sys.argv[2]
 open(path, "w").write(json.dumps(data, indent=2, sort_keys=True) + "\n")' "$SITE/dist/$DATE/yurt-release-manifest.json" "$TOOLING_SHA"
 
-gh_cli release create "$TAG" -R "$PACKAGES_REPO" --title "Rustup dist $VERSION ($DATE)" \
+gh_cli release create "$TAG" -R "$PACKAGES_REPO" --latest=false --title "Rustup dist $VERSION ($DATE)" \
   --notes "Component tarballs for rustup channel $VERSION, built from yurt-rust release $RUST_RELEASE. Tooling: $RUST_REPO@$TOOLING_SHA. Producer host: $PRODUCER_HOST."
 gh_cli release upload "$TAG" -R "$PACKAGES_REPO" "$WORK/components"/*
 
