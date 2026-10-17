@@ -47,6 +47,7 @@ jobs:
   plan:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read  # the trusted/ checkout; plan runs only trusted code
     outputs:
@@ -83,6 +84,7 @@ jobs:
     needs: [plan]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: read
     env:
@@ -160,6 +162,7 @@ jobs:
     needs: [plan, emit]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: write
     env:
@@ -225,6 +228,7 @@ jobs:
     needs: [plan, emit, publish]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions: {}
     env:
       PLAN_RELEASE_TAG: ${{ needs.plan.outputs.release_tag }}
@@ -274,6 +278,7 @@ jobs:
     needs: [plan, emit, publish, check]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # The only job that can read RUSTUP_DIST_PUBLISH_TOKEN (deployment branches: main only).
     environment: rustup-publish
     permissions:
