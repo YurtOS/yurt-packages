@@ -167,6 +167,7 @@ class PublishRustupDist(unittest.TestCase):
         self.assertEqual(self.verbs(), ["release download", "release view", "release create", "release upload"])
         self.assertIn(f"release download {RELEASE} -R YurtOS/yurt-rust", self.calls()[0])
         self.assertIn(self.tooling_sha, self.calls()[2])
+        self.assertIn("--latest=false", self.calls()[2])
         emit = (self.root / "work" / "emit.log").read_text()
         self.assertIn(f"--base-url https://github.com/YurtOS/yurt-packages/releases/download/{TAG}", emit)
         self.assertIn("--producer-host x86_64-unknown-linux-gnu", emit)
