@@ -247,6 +247,10 @@ def check_content(dist: dict[str, bytes], plan: Plan) -> None:
             raise StageError(f"provenance {key} {provenance[key]!r} does not match the plan value {getattr(plan, field)!r}")
 
 
+def render_manifest(version: str, revision: str, date: str, entries: dict[str, dict[str, tuple[str, str]]], base_url: str) -> str:
+    raise NotImplementedError
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:

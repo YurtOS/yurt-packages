@@ -449,35 +449,35 @@ class ComponentTests(Case):
     def test_missing_component(self):
         directory = write_components(self.tmp / "components")
         (directory / f"cargo-{VERSION}-{PRODUCER}.tar.gz").unlink()
-        self.raises(f"missing components: cargo-{VERSION}-{PRODUCER}.tar.gz", self.check, directory)
+        self.raises(f"missing components: ['cargo-{VERSION}-{PRODUCER}.tar.gz']", self.check, directory)
 
     def test_extra_component(self):
         directory = write_components(self.tmp / "components")
         (directory / "rust-src-1.99.0.tar.gz").write_bytes(b"x")
-        self.raises("unexpected components: rust-src-1.99.0.tar.gz", self.check, directory)
+        self.raises("unexpected components: ['rust-src-1.99.0.tar.gz']", self.check, directory)
 
     def test_unknown_target(self):
         entries = component_entries()
         entries["rust-std"]["riscv64gc-unknown-linux-gnu"] = b"x"
         directory = write_components(self.tmp / "components", entries)
-        self.raises("unknown target riscv64gc-unknown-linux-gnu", self.check, directory, dist_members(entries=entries))
+        self.raises("unknown target 'riscv64gc-unknown-linux-gnu'", self.check, directory, dist_members(entries=entries))
 
     def test_guest_target_for_rustc_is_unknown(self):
         entries = component_entries()
         entries["rustc"][GUEST] = b"x"
         directory = write_components(self.tmp / "components", entries)
-        self.raises(f"unknown target {GUEST} for rustc", self.check, directory, dist_members(entries=entries))
+        self.raises(f"unknown target '{GUEST}' for rustc", self.check, directory, dist_members(entries=entries))
 
     def test_unknown_package(self):
         entries = component_entries()
         entries["rust-src"] = {PRODUCER: b"x"}
         directory = write_components(self.tmp / "components", entries)
-        self.raises("unknown package rust-src", self.check, directory, dist_members(entries=entries))
+        self.raises("unknown package 'rust-src'", self.check, directory, dist_members(entries=entries))
 
     def test_hash_mismatch(self):
         directory = write_components(self.tmp / "components")
         (directory / f"rustc-{VERSION}-{PRODUCER}.tar.gz").write_bytes(b"swapped bytes")
-        self.raises(f"rustc-{VERSION}-{PRODUCER}.tar.gz does not match the manifest hash", self.check, directory)
+        self.raises(f"'rustc-{VERSION}-{PRODUCER}.tar.gz' does not match the manifest hash", self.check, directory)
 
     def test_url_under_another_tag(self):
         entries = component_entries()
@@ -516,7 +516,7 @@ class ComponentTests(Case):
     def test_component_is_a_directory(self):
         directory = write_components(self.tmp / "components")
         (directory / "nested").mkdir()
-        self.raises("nested is not a regular file", self.check, directory)
+        self.raises("'nested' is not a regular file", self.check, directory)
 
 
 class DigestTests(Case):
@@ -741,6 +741,175 @@ class CliTests(Case):
         )
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(self.outputs()["tag"], TAG)
+
+
+CANONICAL = "dated manifest is not the canonical rendering"
+EVIL = "https://evil.example/rustc.tar.xz"
+
+
+def tampered(old, new):
+    text = manifest_text(component_entries())
+    assert old in text, old
+    return text.replace(old, new, 1)
+
+
+class CanonicalManifestTests(Case):
+    def read(self, text):
+        return stage.read_dist_tar(self.tar_of(dist_members(manifest=text)), PLAN)
+
+    def target_header(self, package, target=PRODUCER):
+        return f"[pkg.{package}.target.{target}]\navailable = true\n"
+
+    def test_fixture_matches_the_vendored_renderer(self):
+        entries = component_entries()
+        rendered = {p: {t: (f"{p}-{VERSION}-{t}.tar.gz", sha(d)) for t, d in ts.items()} for p, ts in entries.items()}
+        self.assertEqual(stage.render_manifest(VERSION, REVISION, DATE, rendered, PREFIX), manifest_text(entries))
+
+    def test_valid_manifest_round_trips(self):
+        text = manifest_text(component_entries())
+        self.assertEqual(self.read(text)[DATED], text.encode())
+
+    def test_extra_xz_url(self):
+        line = f'url = "{PREFIX}/rustc-{VERSION}-{PRODUCER}.tar.gz"\n'
+        self.raises(CANONICAL, self.read, tampered(line, line + f'xz_url = "{EVIL}"\nxz_hash = "{"a" * 64}"\n'))
+
+    def test_extra_zst_url(self):
+        line = f'url = "{PREFIX}/cargo-{VERSION}-{PRODUCER}.tar.gz"\n'
+        self.raises(CANONICAL, self.read, tampered(line, line + f'zst_url = "{EVIL}"\nzst_hash = "{"a" * 64}"\n'))
+
+    def test_url_on_a_rust_target(self):
+        header = self.target_header("rust")
+        self.raises(CANONICAL, self.read, tampered(header, header + f'url = "{EVIL}"\nhash = "{"a" * 64}"\n'))
+
+    def test_extra_top_level_key(self):
+        self.raises(CANONICAL, self.read, tampered(f'date = "{DATE}"\n', f'date = "{DATE}"\nextra = "x"\n'))
+
+    def test_changed_profile(self):
+        self.raises(CANONICAL, self.read, tampered('minimal = ["rustc", "cargo", "rust-std"]', 'minimal = ["rustc"]'))
+
+    def test_renames_entry(self):
+        self.raises(CANONICAL, self.read, tampered("[renames]\n", '[renames]\nrls = { to = "rustc" }\n'))
+
+    def test_changed_available(self):
+        header = self.target_header("rustc")
+        self.raises(CANONICAL, self.read, tampered(header, header.replace("available = true", "available = false")))
+
+    def test_reordered_components(self):
+        old = f'components = [{{ pkg = "rustc", target = "{PRODUCER}" }}, {{ pkg = "cargo", target = "{PRODUCER}" }}'
+        new = f'components = [{{ pkg = "cargo", target = "{PRODUCER}" }}, {{ pkg = "rustc", target = "{PRODUCER}" }}'
+        self.raises(CANONICAL, self.read, tampered(old, new))
+
+    def test_altered_extensions(self):
+        old = f'extensions = [{{ pkg = "rust-std", target = "{GUEST}" }}]'
+        self.raises(CANONICAL, self.read, tampered(old, "extensions = []"))
+
+    def test_formatting_change(self):
+        self.raises(CANONICAL, self.read, tampered('manifest-version = "2"', "manifest-version = '2'"))
+
+    def test_check_components_also_rejects_xz_url(self):
+        line = f'url = "{PREFIX}/rustc-{VERSION}-{PRODUCER}.tar.gz"\n'
+        text = tampered(line, line + f'xz_url = "{EVIL}"\nxz_hash = "{"a" * 64}"\n')
+        directory = write_components(self.tmp / "components")
+        self.raises(CANONICAL, stage.check_components, directory, dist_members(manifest=text), PLAN)
+
+
+class ParserLimitTests(Case):
+    def test_deeply_nested_provenance_json(self):
+        data = b"[" * 200000
+        self.assertLess(len(data), stage.MAX_MEMBER_BYTES)
+        self.raises("provenance is not valid JSON", stage.read_dist_tar, self.tar_of(dist_members(prov=data)), PLAN)
+
+    def test_deeply_nested_manifest_arrays(self):
+        text = "a = " + "[" * 200000
+        self.assertLess(len(text), stage.MAX_MEMBER_BYTES)
+        self.raises("dated manifest is not valid TOML", stage.read_dist_tar, self.tar_of(dist_members(manifest=text)), PLAN)
+
+    def test_deeply_nested_manifest_inline_tables(self):
+        text = "a = " + "{ b = " * 100000
+        self.assertLess(len(text), stage.MAX_MEMBER_BYTES)
+        self.raises("dated manifest is not valid TOML", stage.read_dist_tar, self.tar_of(dist_members(manifest=text)), PLAN)
+
+
+INJECTED = "x\n::error::injected\n::add-mask::secret"
+
+
+class EscapingTests(Case):
+    def assert_one_line(self, message):
+        self.assertNotIn("\n", message)
+        self.assertNotIn("\r", message)
+
+    def check_raises(self, text, directory=None):
+        directory = directory or write_components(self.tmp / "components")
+        with self.assertRaises(stage.StageError) as caught:
+            stage.check_components(directory, dist_members(manifest=text), PLAN)
+        self.assert_one_line(str(caught.exception))
+        return str(caught.exception)
+
+    def test_package_key_with_newline(self):
+        text = manifest_text(component_entries()) + '\n[pkg."x\\n::error::injected"]\nversion = "v"\n'
+        self.assertIn("unknown package 'x\\n::error::injected'", self.check_raises(text))
+
+    def test_target_key_with_newline(self):
+        text = manifest_text(component_entries()) + '\n[pkg.rust-std.target."x\\n::error::injected"]\nurl = "u"\nhash = "h"\n'
+        self.assertIn("unknown target 'x\\n::error::injected'", self.check_raises(text))
+
+    def test_rust_target_key_with_newline(self):
+        text = manifest_text(component_entries()) + '\n[pkg.rust.target."x\\n::error::injected"]\navailable = true\n'
+        self.assertIn("unknown target 'x\\n::error::injected' for rust", self.check_raises(text))
+
+    def test_component_file_name_with_newline(self):
+        directory = write_components(self.tmp / "components")
+        (directory / INJECTED).write_bytes(b"x")
+        self.assertIn("unexpected components", self.check_raises(manifest_text(component_entries()), directory))
+
+    def test_component_link_name_with_newline(self):
+        directory = write_components(self.tmp / "components")
+        (directory / INJECTED).symlink_to(directory / f"cargo-{VERSION}-{PRODUCER}.tar.gz")
+        self.assertIn("is not a regular file", self.check_raises(manifest_text(component_entries()), directory))
+
+    def test_member_name_with_newline(self):
+        tar = self.tar_of([*dist_members().items(), (f"dist/{INJECTED}", b"x")])
+        with self.assertRaises(stage.StageError) as caught:
+            stage.read_dist_tar(tar, PLAN)
+        self.assert_one_line(str(caught.exception))
+
+    def test_producer_host_message_with_newline_host(self):
+        entries = component_entries()
+        for package in PACKAGES:
+            entries[package] = {INJECTED if t == PRODUCER else t: d for t, d in entries[package].items()}
+        escaped = INJECTED.replace("\n", "\\n")
+        text = manifest_text(entries).replace(f".{INJECTED}]", f'."{escaped}"]').replace(INJECTED, escaped)
+        with self.assertRaises(stage.StageError) as caught:
+            stage.read_dist_tar(self.tar_of(dist_members(manifest=text)), PLAN)
+        self.assertIn("producer host", str(caught.exception))
+        self.assert_one_line(str(caught.exception))
+
+    def test_cli_stderr_carries_no_workflow_command(self):
+        staging = self.staging()
+        components = write_components(self.tmp / "components")
+        (components / INJECTED).write_bytes(b"x")
+        env = {
+            "PATH": os.environ.get("PATH", ""), "PLAN_RELEASE_TAG": RELEASE, "PLAN_VERSION": VERSION, "PLAN_REVISION": REVISION,
+            "PLAN_DATE": DATE, "PLAN_PRODUCER_HOST": PRODUCER, "PLAN_TOOLING_SHA": TOOLING_SHA, "PLAN_TAG": TAG,
+            "OUTPUT_FILE": str(self.tmp / "output"),
+        }
+        done = subprocess.run([sys.executable, "-I", str(TOOL), "validate-components", "--dist-dir", str(staging), "--dir", str(components)],
+                              env=env, capture_output=True, text=True)
+        self.assertEqual(done.returncode, 1, done.stderr)
+        lines = done.stderr.splitlines()
+        self.assertEqual(len(lines), 1, done.stderr)
+        self.assertTrue(lines[0].startswith("rustup_dist_stage: "), done.stderr)
+        self.assertIn("unexpected components", lines[0])
+
+    def test_main_neutralises_control_characters(self):
+        stderr = io.StringIO()
+        with mock.patch.object(stage, "run", side_effect=stage.StageError("a\nb\r\x1b[31m c")), contextlib.redirect_stderr(stderr):
+            self.assertEqual(stage.main(["plan", "--release", "r", "--date", "", "--producer-host", "h", "--tooling-sha", "s"]), 1)
+        out = stderr.getvalue()
+        self.assertEqual(out.count("\n"), 1)
+        self.assertTrue(out.endswith("\n"))
+        for char in ("\r", "\x1b", " "):
+            self.assertNotIn(char, out)
 
 
 if __name__ == "__main__":
