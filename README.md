@@ -154,11 +154,6 @@ the jobs it runs in.
     This matters because a dispatch creates a missing environment automatically,
     with no branch rule. `push` would then read the repository secret, which a
     workflow on any branch can also read.
-
-    **Blocker, as of 2026-10-17:** the `rustup-publish` environment does not
-    exist, `RUSTUP_DIST_PUBLISH_TOKEN` is a repository secret, and GitHub Pages
-    is not enabled. Do the setup above, and enable Pages (below), before the
-    first dispatch.
   - The organization may need to approve the two fine-grained PATs.
   - The repository's or the organization's Actions settings may limit what
     `GITHUB_TOKEN` can do. If `publish` fails with a 403 on `release create`,
@@ -188,6 +183,14 @@ the jobs it runs in.
   publishes yurt-rust's git SHA, release tag and asset names, sizes and hashes in
   `dist/<date>/yurt-release-manifest.json`; this was decided by hosting the dist
   under `yurt-packages`.
+- Artifacts are public while they exist. This repository is public, so any
+  signed-in GitHub user can download the artifacts that `emit` uploads (the
+  re-split release archives, about 1 GB, kept for one day). This holds after a
+  failed or unintended run too. Only dispatch for a release that is meant to be
+  published.
+- A missing `PUSH_TOKEN`, or a missing `rustup-publish` environment, is detected
+  only in `push`. By then `publish` has already created the release. The next
+  dispatch recreates a release that has no published manifest.
 
 Clients use `yurt-rustup-init.sh` from the `yurt-rust` repository. It reads its
 pins file `scripts/rustup-init.pins` relative to its own location, so run it

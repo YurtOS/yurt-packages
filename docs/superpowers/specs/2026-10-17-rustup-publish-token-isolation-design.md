@@ -12,8 +12,8 @@ and a filesystem, so no care inside one job closes this.
 
 ## Contract
 
-- Code from `tooling_ref` (emitter, checker) never runs in a job that holds a
-  write credential, and nothing a write-credential job executes or trusts comes
+- Code from `tooling_ref` (emitter, checker) never runs in a job in this
+  workflow that holds a write credential, and nothing a write-credential job executes or trusts comes
   from it without validation as data.
 - The long-lived write credential this workflow uses, `RUSTUP_DIST_PUBLISH_TOKEN`,
   can touch only `YurtOS/yurt-packages` and is reachable by exactly one job
@@ -261,6 +261,10 @@ is a direct call to the tooling checker). Red first, then green:
   `plan` validates the SHA it resolves as 40-hex.
 - `check` runs tooling code with the read-only token: acceptable, it can only
   read the repo the tooling came from.
+- Artifact exposure: the repository is public, so the artifacts `emit` uploads
+  (~1 GB of re-split release archives, one-day retention) are downloadable by
+  any signed-in GitHub user while they exist, even after a failed or unintended
+  run; only dispatch for a release that is meant to be published.
 - Transfer: the ~1 GB components move once, from `emit` to `publish`; storage
   is covered by one-day retention. The README's 1 GB figure is for the
   acceptance workflow, not this artifact.
