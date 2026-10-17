@@ -99,16 +99,28 @@ gh_cli release upload "$TAG" -R "$PACKAGES_REPO" "$WORK/components"/*
 
 python3 "$TOOLING_DIR/scripts/verify_rustup_dist_urls.py" --dist "$SITE/dist" --channel "$VERSION" --date "$DATE"
 
-git -C "$SITE" add dist
-git -C "$SITE" -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-  commit --quiet -m "chore: publish rustup dist $VERSION $DATE"
-# The checkout stores no credentials; the token reaches git only through this one push's environment
-# (not argv, not .git/config). The refresh fetch is anonymous: the Pages branch lives in a public repo.
-if [[ -n "$GH_AUTH_TOKEN" ]]; then
-  GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" \
-    GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_AUTH_TOKEN" | base64 | tr -d '\n')" \
+site_git() {
+  git -C "$SITE" -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" "$@"
+}
+push_site() {
+  if [[ -n "$GH_AUTH_TOKEN" ]]; then
+    GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" \
+      GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_AUTH_TOKEN" | base64 | tr -d '\n')" \
+      git -C "$SITE" push origin "HEAD:$PAGES_BRANCH"
+  else
     git -C "$SITE" push origin "HEAD:$PAGES_BRANCH"
-else
-  git -C "$SITE" push origin "HEAD:$PAGES_BRANCH"
-fi
+  fi
+}
+
+git -C "$SITE" add dist
+site_git commit --quiet -m "chore: publish rustup dist $VERSION $DATE"
+# The checkout stores no credentials; the token reaches git only through the push's environment
+# (not argv, not .git/config). The refresh fetch is anonymous: the Pages branch lives in a public repo.
+# Another publisher may have pushed since the checkout: rebase onto it and retry, a bounded number of times.
+for attempt in 1 2 3; do
+  if push_site; then break; fi
+  [[ "$attempt" -lt 3 ]] || die "could not push to $PAGES_BRANCH after $attempt attempts"
+  git -C "$SITE" fetch --quiet origin "$PAGES_BRANCH"
+  site_git rebase --quiet "origin/$PAGES_BRANCH" || { git -C "$SITE" rebase --abort || true; die "rebase onto origin/$PAGES_BRANCH failed"; }
+done
 echo "published $TAG"
