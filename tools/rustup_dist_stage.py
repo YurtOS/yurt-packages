@@ -105,6 +105,9 @@ def expected_paths(plan: Plan) -> tuple[str, str, str, str, str]:
 
 
 def check_date_rules(site: Path, plan: Plan) -> None:
+    # A missing site is an error, never "skip"; a site without dist/ (nothing published yet) passes.
+    if not os.path.isdir(site) or os.path.islink(site):
+        raise StageError(f"site {str(site)!r} is not a directory")
     dist = site / "dist"
     if not os.path.lexists(dist):
         return
@@ -477,10 +480,11 @@ def run(args: argparse.Namespace) -> None:
         return
     plan = plan_from_env()
     if args.command == "validate-dist":
-        check_date_rules(Path(args.site), plan)
         dist = read_dist_dir(Path(args.dir), plan)
         if os.environ.get("DIGESTS"):
             verify_digests(expected_digests(), compute_digests(Path(args.dir) / "dist.tar", dist, None))
+    elif args.command == "check-dates":
+        check_date_rules(Path(args.site), plan)
     elif args.command == "validate-components":
         dist = read_dist_dir(Path(args.dist_dir), plan)
         components = check_components(Path(args.dir), dist, plan)
@@ -488,11 +492,9 @@ def run(args: argparse.Namespace) -> None:
         write_outputs({"digests": json.dumps(digests, separators=(",", ":"), sort_keys=True)})
     elif args.command == "apply":
         expected = expected_digests()
-        site = Path(args.site)
-        check_date_rules(site, plan)
         dist = read_dist_dir(Path(args.dist_dir), plan)
         verify_digests(expected, compute_digests(Path(args.dist_dir) / "dist.tar", dist, None))
-        for path in apply_dist(site, dist, plan):
+        for path in apply_dist(Path(args.site), dist, plan):  # date rules first, before any write
             print(path)
 
 
@@ -511,7 +513,8 @@ def main(argv: list[str] | None = None) -> int:
     plan.add_argument("--tooling-sha", required=True)
     validate = commands.add_parser("validate-dist")
     validate.add_argument("--dir", required=True)
-    validate.add_argument("--site", required=True)
+    dates = commands.add_parser("check-dates")
+    dates.add_argument("--site", required=True)
     components = commands.add_parser("validate-components")
     components.add_argument("--dist-dir", required=True)
     components.add_argument("--dir", required=True)

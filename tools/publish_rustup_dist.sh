@@ -189,8 +189,8 @@ with tarfile.open(target, "x", format=tarfile.PAX_FORMAT) as tar:
             info = tarfile.TarInfo(name)
             info.size, info.mode, info.mtime = status.st_size, 0o644, 0
             tar.addfile(info, handle)' "$SITE" "$WORK/dist/dist.tar" "${FIVE[@]}"
-  # Self-check with the validator publish uses (date rules are publish's: the site now holds the output).
-  python3 -I "$STAGE" validate-dist --dir "$WORK/dist" --site "$WORK/no-site"
+  # Self-check with the validator publish uses (the date rules are publish's and push's).
+  python3 -I "$STAGE" validate-dist --dir "$WORK/dist"
   mv "$WORK/dist/dist.tar" "$out/dist/dist.tar"
   echo "emitted $PLAN_TAG" >&2
 }
@@ -210,8 +210,9 @@ phase_publish() {
   OUTPUT_FILE="$WORK/outputs" python3 -I "$STAGE" validate-components --dist-dir "$DIST_DIR" --dir "$COMPONENTS_DIR"
   # Eligibility on fresh state: a manifest published for this date (or a later one) refuses, so the
   # assets of a published manifest are never deleted or overwritten.
+  # (DIST_DIR is outside the site and validate-components already validated it.)
   reset_site
-  python3 -I "$STAGE" validate-dist --dir "$DIST_DIR" --site "$SITE"
+  python3 -I "$STAGE" check-dates --site "$SITE"
   # The delete below is safe only because the workflow-level publish-package concurrency group
   # serializes whole runs: no other run can publish a manifest for this tag between the date-rule
   # check above and the delete (tests/test_publish_workflow.py asserts the group).
@@ -262,7 +263,7 @@ phase_push() {
   trap 'reset_site || true; rm -rf "$WORK"' EXIT
 
   # The artifact must be the one publish validated, before anything is staged.
-  python3 -I "$STAGE" validate-dist --dir "$DIST_DIR" --site "$WORK/no-site"
+  python3 -I "$STAGE" validate-dist --dir "$DIST_DIR"
   # Never rebase onto a newer main: every attempt starts from a fresh main and rechecks the date
   # rules there (apply), so a publication that landed meanwhile fails closed.
   local attempt
