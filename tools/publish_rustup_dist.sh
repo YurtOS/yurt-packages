@@ -23,8 +23,10 @@
 #   push     PLAN_*, DIST_DIR, DIGESTS (publish's digests), YURT_SITE_DIR, PUSH_TOKEN,
 #            GITHUB_RUN_ATTEMPT=1. Commits the five files onto a fresh main and pushes.
 #
-# Only emit runs tooling code (the emitter, without -I: it imports its siblings), and never with a
-# token in its environment. publish and push run only this script and rustup_dist_stage.py from
+# Only emit runs tooling code (the emitter, without -I: it imports its siblings). The emitter is
+# started without GH_TOKEN in its environment, but it can still reach the read token through the
+# shared VM (the step shell, the runner); the contract accepts that, the token is read-only.
+# publish and push run only this script and rustup_dist_stage.py from
 # this script's own directory (trusted/), never anything from the site checkout or an artifact.
 set -euo pipefail
 

@@ -101,6 +101,28 @@ out after it landed) a published manifest. The next dispatch handles the first
 two by recreating the release. For the third it refuses: check `main`.
 Artifacts are kept for one day.
 
+### Security model (what the isolation covers)
+
+The five-job split keeps code from `tooling_ref` away from
+`RUSTUP_DIST_PUBLISH_TOKEN`, and the isolation contract covers that token only.
+`push` is the only job that can read it. `push` restores no cache, and it
+accepts only the artifact whose digests `publish` computed.
+
+It does **not** cover `PACKAGE_PUBLISH_TOKEN`:
+- Tooling code in `emit` and `check` runs on the runner as the runner user.
+  It can act with that job's Actions runtime token, and a dispatch on `main`
+  writes cache entries scoped to `main`.
+- `publish-package.yml` restores such a cache (`Swatinem/rust-cache`) in the
+  job that holds `PACKAGE_PUBLISH_TOKEN` and `contents: write`.
+- So tooling code can still reach `PACKAGE_PUBLISH_TOKEN` through a poisoned
+  cache. This is not a regression: before this change, the tooling held that
+  token directly.
+- A follow-up issue will remove the cache restore from that job, or move the
+  build into a job without credentials.
+
+Also accepted: tooling code can reach the read-only `YURT_RUST_READ_TOKEN` in
+the jobs it runs in.
+
 ### Setup and access
 
 - `YURT_RUST_READ_TOKEN` (repository secret): a fine-grained PAT for
@@ -124,18 +146,32 @@ Artifacts are kept for one day.
   workflow no longer does.
 - First-dispatch checklist (needs the maintainer's go; nothing here has run on a
   hosted runner yet):
+  - **First, before any dispatch:** under Settings > Environments, confirm that:
+    - `rustup-publish` exists, with deployment branches set to `main` only;
+    - it holds `RUSTUP_DIST_PUBLISH_TOKEN`;
+    - **no** repository secret named `RUSTUP_DIST_PUBLISH_TOKEN` remains.
+
+    This matters because a dispatch creates a missing environment automatically,
+    with no branch rule. `push` would then read the repository secret, which a
+    workflow on any branch can also read.
+
+    **Blocker, as of 2026-10-17:** the `rustup-publish` environment does not
+    exist, `RUSTUP_DIST_PUBLISH_TOKEN` is a repository secret, and GitHub Pages
+    is not enabled. Do the setup above, and enable Pages (below), before the
+    first dispatch.
   - The organization may need to approve the two fine-grained PATs.
-  - An organization policy can limit `GITHUB_TOKEN` to read, and a job's
-    `contents: write` cannot exceed that limit. If `publish` fails with a 403 on
-    `release create`, such a policy is the cause.
+  - The repository's or the organization's Actions settings may limit what
+    `GITHUB_TOKEN` can do. If `publish` fails with a 403 on `release create`,
+    check those settings. Confirm this at the first dispatch.
   - `YURT_RUST_READ_TOKEN` is a repository secret, so a workflow on any branch can
     read it. This is accepted: it is read-only, on the repository whose tooling
     the dispatcher already chooses.
   - Before dispatching, run the tooling smoke test locally against a
     `yurt-rust` checkout at the `tooling_ref` you will use:
     `YURT_RUST_TOOLING_DIR=<checkout> python3 -m unittest discover -s tests -p 'test_publish_workflow.py'`
-    (needs PyYAML). It runs the real emitter and checker `--help`. CI cannot
-    read `yurt-rust`, so there it skips.
+    (needs PyYAML). It runs the real emitter and checker `--help`, and compares
+    the emitter's `write_manifest` byte for byte with the validator's vendored
+    `render_manifest`. CI cannot read `yurt-rust`, so there it skips.
   - Only a hosted run proves these: which secrets each job sees, the
     environment's branch gating, artifact transfer by id, the `run_attempt`
     refusal and the real Pages trigger.

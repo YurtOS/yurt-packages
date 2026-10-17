@@ -246,6 +246,7 @@ class Harness(unittest.TestCase):
         hook = self.remote / "hooks" / "pre-receive"
         hook.write_text(
             "#!/bin/sh\n"
+            # git strips GIT_CONFIG_COUNT before this local hook runs, so its field is always empty.
             f'echo "${{GIT_CONFIG_COUNT:-}}|${{GIT_CONFIG_KEY_0:-}}|${{GIT_CONFIG_VALUE_0:-}}" >> {self.root}/push.env\n'
             f'if [ -e {self.root}/reject ]; then echo "rejected by the test" >&2; exit 1; fi\n'
         )
@@ -947,6 +948,9 @@ class PushPhaseTests(Harness):
         needles = [s.encode() for s in SECRETS] + [AUTH_HEADER.split()[-1].encode()]
         stored = [f for f in (site / ".git").rglob("*") if f.is_file() and any(n in f.read_bytes() for n in needles)]
         self.assertEqual(stored, [])
+        # GIT_CONFIG_COUNT is empty here because git strips it (local_repo_env) before running the
+        # local receive-pack hook, not because it was unset. This proves the key and value reach
+        # git, not that the header authenticates an https push (hosted-only).
         self.assertEqual(self.header_pushes(), [f"|http.https://github.com/.extraheader|{AUTH_HEADER}"])
         self.assertNotIn(PUSH, result.stderr + result.stdout)
 
@@ -958,6 +962,8 @@ class PushPhaseTests(Harness):
         pushed = self.push(self.staged(dist_dir), published.outputs()["digests"], GH_TOKEN=READ, YURT_RUST_READ_TOKEN=READ)
         self.assertEqual(pushed.returncode, 0, pushed.stderr)
         self.assertEqual(pushed.calls(), [])
+        # Empty GIT_CONFIG_COUNT: git strips it on local transports (see the test above); the
+        # https authentication itself is hosted-only.
         self.assertEqual(self.header_pushes(), [f"|http.https://github.com/.extraheader|{AUTH_HEADER}"])
 
 

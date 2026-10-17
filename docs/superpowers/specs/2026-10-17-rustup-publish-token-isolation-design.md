@@ -15,15 +15,22 @@ and a filesystem, so no care inside one job closes this.
 - Code from `tooling_ref` (emitter, checker) never runs in a job that holds a
   write credential, and nothing a write-credential job executes or trusts comes
   from it without validation as data.
-- The only long-lived write credential, `RUSTUP_DIST_PUBLISH_TOKEN`, can touch
-  only `YurtOS/yurt-packages` and is reachable by exactly one job (`push`),
-  from an environment restricted to `main`. The credential that reads the
-  private `YurtOS/yurt-rust` is read-only.
+- The long-lived write credential this workflow uses, `RUSTUP_DIST_PUBLISH_TOKEN`,
+  can touch only `YurtOS/yurt-packages` and is reachable by exactly one job
+  (`push`), from an environment restricted to `main`. The credential that reads
+  the private `YurtOS/yurt-rust` is read-only.
+- The contract covers `RUSTUP_DIST_PUBLISH_TOKEN` only. It does **not** cover
+  `PACKAGE_PUBLISH_TOKEN`, the repository secret that `publish-package.yml`
+  uses. Tooling code in `emit`/`check` can write `main`-scoped Actions cache
+  entries, and `publish-package.yml` restores such a cache (`Swatinem/rust-cache`)
+  in the job that holds that token. This is not a regression (before this change
+  the tooling held the token directly). A follow-up issue removes that path.
 - Not in the contract: integrity of the *content* the emitter produces. Whoever
   dispatches chooses the ref and is trusted for the dist content (the manifests
   and tarballs are only as good as the tooling). The fix confines a bad ref to
-  that content, inside a fixed set of paths, and keeps it away from the
-  credentials and from the rest of the repo. Repository workflow authors remain
+  that content, inside a fixed set of paths, and keeps it away from
+  `RUSTUP_DIST_PUBLISH_TOKEN` and the job-scoped write `GITHUB_TOKEN` (but not
+  from `PACKAGE_PUBLISH_TOKEN`, see above). Repository workflow authors remain
   trusted: anyone who can edit workflows on `main` can do anything.
 
 ## Severity
@@ -235,9 +242,18 @@ is a direct call to the tooling checker). Red first, then green:
 - Org may need to approve the two PATs; the user must create the
   `rustup-publish` environment (deployment branches: `main` only, no tag
   rules), move `RUSTUP_DIST_PUBLISH_TOKEN` into it, and delete the repo-level
-  secret of the same name so the environment one is not shadowed.
-- First-dispatch checklist: an org policy can cap `GITHUB_TOKEN` to read, which
-  would make `publish` fail (job-level `contents: write` cannot exceed it);
+  secret of the same name, because a workflow on any branch can read a
+  repository secret (the environment secret would take precedence, but the
+  repository copy stays exposed). Until that setup is done, a dispatch would
+  auto-create `rustup-publish` with no branch rule and `push` would read the
+  repository secret; as of 2026-10-17 the environment does not exist, the
+  secret is a repository secret and Pages is not enabled (a pre-dispatch
+  blocker, see the README checklist).
+- Cross-workflow cache: tooling code can poison the `main`-scoped Actions cache
+  that `publish-package.yml` restores in the job holding `PACKAGE_PUBLISH_TOKEN`
+  (see Contract). Accepted for this change; a follow-up issue removes it.
+- First-dispatch checklist: the repository or organization Actions settings may
+  cap `GITHUB_TOKEN`, which would make `publish` fail; verify at first dispatch;
   `YURT_RUST_READ_TOKEN` stays readable from any branch (accepted: it is
   read-only on a repo whose tooling the dispatcher already chooses);
   `publish` holds a short-lived write `GITHUB_TOKEN` but runs only trusted code;
