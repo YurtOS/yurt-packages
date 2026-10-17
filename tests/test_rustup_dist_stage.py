@@ -194,6 +194,12 @@ class DateRuleTests(Case):
         site.mkdir()
         stage.check_date_rules(site, PLAN)
 
+    def test_missing_site_is_refused(self):
+        """A missing site never means "skip the date rules"."""
+        self.raises("is not a directory", stage.check_date_rules, self.tmp / "missing", PLAN)
+        (self.tmp / "file").write_text("x")
+        self.raises("is not a directory", stage.check_date_rules, self.tmp / "file", PLAN)
+
     def test_later_than_newest_is_accepted(self):
         stage.check_date_rules(self.site("2026-09-30", "not-a-date", "2026-02-30"), PLAN)
 
@@ -628,7 +634,10 @@ class CliTests(Case):
         stdout = io.StringIO()
         clean = {k: v for k, v in os.environ.items() if not k.startswith("PLAN_") and k not in ("OUTPUT_FILE", "DIGESTS")}
         with mock.patch.dict(os.environ, {**clean, **env}, clear=True), contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(stdout):
-            code = stage.main(argv)
+            try:
+                code = stage.main(argv)
+            except SystemExit as error:  # argparse refusing the command line
+                code = error.code
         return code, stdout.getvalue(), stderr.getvalue()
 
     def outputs(self):
@@ -659,24 +668,42 @@ class CliTests(Case):
         for key, value in (("PLAN_TAG", "rustup-1.99.0-2026-09-30"), ("PLAN_VERSION", "1.98.0"), ("PLAN_REVISION", "0.0.2"), ("PLAN_DATE", "")):
             with self.subTest(key=key):
                 subprocess.run(["rm", "-rf", str(self.tmp / "staging"), str(self.tmp / "site")], check=True)
-                code, _, err = self.main(["validate-dist", "--dir", str(self.staging()), "--site", str(self.site())], self.plan_env(**{key: value}))
+                code, _, err = self.main(["validate-dist", "--dir", str(self.staging())], self.plan_env(**{key: value}))
                 self.assertEqual(code, 1)
-                self.assertIn("plan", err)
+                self.assertIn("PLAN_", err)
 
     def test_validate_dist(self):
-        code, _, err = self.main(["validate-dist", "--dir", str(self.staging()), "--site", str(self.site("2026-09-01"))], self.plan_env())
+        code, _, err = self.main(["validate-dist", "--dir", str(self.staging())], self.plan_env())
         self.assertEqual(code, 0, err)
 
-    def test_validate_dist_runs_date_rules(self):
-        code, _, err = self.main(["validate-dist", "--dir", str(self.staging()), "--site", str(self.site("2026-10-02"))], self.plan_env())
-        self.assertEqual(code, 1)
-        self.assertIn("must be later than the newest dated dir", err)
+    def test_validate_dist_takes_no_site(self):
+        """The date rules are check-dates' and apply's: validate-dist has no site to skip them with."""
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            stage.main(["validate-dist", "--dir", str(self.staging()), "--site", str(self.site())])
+
+    def test_check_dates(self):
+        cases = {
+            "older dated dir": (self.site("2026-09-01"), None),
+            "no dist yet": (self.tmp / "bare", None),
+            "same date": (self.tmp / "same", "already exists"),
+            "newer dated dir": (self.tmp / "newer", "must be later than the newest dated dir"),
+            "missing site": (self.tmp / "missing", "is not a directory"),
+        }
+        cases["no dist yet"][0].mkdir()
+        (self.tmp / "same" / "dist" / DATE).mkdir(parents=True)
+        (self.tmp / "newer" / "dist" / "2026-10-05").mkdir(parents=True)
+        for name, (site, message) in cases.items():
+            with self.subTest(case=name):
+                code, out, err = self.main(["check-dates", "--site", str(site)], self.plan_env())
+                self.assertEqual((code, out), (0 if message is None else 1, ""), err)
+                if message:
+                    self.assertIn(message, err)
 
     def test_validate_dist_rejects_hostile_tar(self):
         directory = self.tmp / "staging"
         directory.mkdir()
         write_tar(directory / "dist.tar", [*dist_members().items(), ("dist/../x", b"x")])
-        code, _, err = self.main(["validate-dist", "--dir", str(directory), "--site", str(self.site())], self.plan_env())
+        code, _, err = self.main(["validate-dist", "--dir", str(directory)], self.plan_env())
         self.assertEqual(code, 1)
         self.assertIn("rustup_dist_stage: ", err)
         self.assertIn("member path contains ..", err)
@@ -729,11 +756,15 @@ class CliTests(Case):
         self.assertIn(f"digest mismatch for {MOVING}", err)
         self.assertFalse((site / "dist" / DATE).exists())
 
-    def test_apply_runs_date_rules(self):
-        staging, site = self.staging(), self.site(DATE)
-        code, _, err = self.main(["apply", "--dist-dir", str(staging), "--site", str(site)], self.plan_env(DIGESTS=self.digests_for(staging)))
-        self.assertEqual(code, 1)
-        self.assertIn("already exists", err)
+    def test_apply_runs_date_rules_before_writing_anything(self):
+        for dated, message in ((DATE, "already exists"), ("2026-10-05", "must be later than")):
+            with self.subTest(dated=dated):
+                subprocess.run(["rm", "-rf", str(self.tmp / "staging"), str(self.tmp / "site")], check=True)
+                staging, site = self.staging(), self.site(dated)
+                code, _, err = self.main(["apply", "--dist-dir", str(staging), "--site", str(site)], self.plan_env(DIGESTS=self.digests_for(staging)))
+                self.assertEqual(code, 1)
+                self.assertIn(message, err)
+                self.assertEqual(sorted(p.name for p in (site / "dist").iterdir()), [dated])
 
     def test_runs_isolated_as_a_script(self):
         done = subprocess.run(
