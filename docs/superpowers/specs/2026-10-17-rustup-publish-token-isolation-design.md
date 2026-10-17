@@ -59,7 +59,7 @@ No caches in any job that holds a write credential.
 | `plan` | trusted code only. Validates the inputs, resolves an empty date to today (UTC) **once**, derives `tag`, `version`, `revision`, `release_tag`, `date`, `producer_host`, resolves `tooling_ref` to a commit SHA (`gh api`). Outputs all of these. | `YURT_RUST_READ_TOKEN` (for the SHA lookup only) |
 | `emit` | checks out `tooling` at the planned SHA; downloads the yurt-rust release; confirms its manifest version/revision equal the plan; runs the emitter against an anonymous checkout of `dist/`; uploads two artifacts | `YURT_RUST_READ_TOKEN` |
 | `publish` | trusted scripts at `github.sha` in an isolated directory; downloads the artifacts by id into an isolated staging dir, **validates them as data**, rechecks eligibility on fresh `main`, creates the release `rustup-<ver>-<date>` and uploads the tarballs; outputs the sha256 of every validated file | job-scoped `GITHUB_TOKEN` (`contents: write`) |
-| `check` | checks out `tooling` at the **planned** SHA, runs the URL checker against the `rustup-dist` artifact and the public asset URLs; never uploads | `YURT_RUST_READ_TOKEN` |
+| `check` | checks out `tooling` at the **planned** SHA, runs the URL checker against the `rustup-dist` artifact and the public asset URLs; anything it uploads is never consumed | `YURT_RUST_READ_TOKEN` |
 | `push` | trusted scripts in the isolated directory; downloads the small artifact by id, verifies the sha256s from `publish`, rebuilds the change on a fresh `main` checkout, commits and pushes with a bounded retry | `RUSTUP_DIST_PUBLISH_TOKEN` (environment `rustup-publish`, branch `main` only) |
 
 The trusted scripts are checked out at `github.sha` into `trusted/`, a sibling
@@ -90,6 +90,18 @@ No `meta.json`: every identity value comes from `plan` outputs. A job named
 never read.
 
 ### Validation (one shared function, used by `publish` and `push`)
+
+`publish` runs the container and content checks on both artifacts. `push`
+downloads only `rustup-dist` and runs the dist checks; it is bound to the
+tarballs indirectly: `publish`'s digest pins `dist.tar` (as a whole, plus each
+of its five members), and the manifest inside pins the component hashes that
+`publish` verified. Each artifact id is downloaded into its own empty staging
+directory (one id per step), so the "exactly the expected files" check does
+not depend on download-artifact's folder layout. The dated manifest's version
+string is compared against the exact value the emitter writes,
+`"<X.Y.Z> (yurt <A.B.C>)"`, built from the plan's version and revision (which
+also binds the revision); a bare `X.Y.Z` comparison would reject valid
+manifests.
 
 `download-artifact` is pinned by commit SHA and addressed by artifact id into
 an empty staging directory outside `trusted/` and `site/`. Two layers:
