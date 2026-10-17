@@ -56,6 +56,8 @@ pathlib.Path(a.components).mkdir(parents=True, exist_ok=True)
 CHECKER = """import os, pathlib, sys
 open(pathlib.Path(os.environ["GH_LOG"]).parent / "check.log", "w").write(" ".join(sys.argv[1:]))
 open(pathlib.Path(os.environ["GH_LOG"]).parent / "check.tok", "w").write(os.environ.get("GH_TOKEN", "") + os.environ.get("GITHUB_TOKEN", ""))
+if os.environ.get("FAKE_ON_CHECK"):
+    os.system("bash " + os.environ["FAKE_ON_CHECK"])
 sys.exit(1 if os.environ.get("FAKE_CHECKER_FAIL") else 0)
 """
 
@@ -236,6 +238,17 @@ class PublishRustupDist(unittest.TestCase):
         self.assertNotEqual(self.run_script(FAKE_CHECKER_FAIL="1").returncode, 0)
         self.assertEqual(git("status", "--porcelain", cwd=self.site), "")
         self.assertEqual((self.site / moving).read_text(), "old\n")
+
+    def test_push_race_is_rebased_and_retried(self):
+        hook = self.root / "land.sh"
+        hook.write_text(
+            f"cd {self.other} && echo y > unrelated && git add . && git -c user.name=t -c user.email=t@t commit -qm race"
+            " && git push -q origin HEAD:main\n"
+        )
+        self.assertEqual(self.run_script(FAKE_ON_CHECK=str(hook)).returncode, 0)
+        probe = self.clone("probe")
+        self.assertTrue((probe / "unrelated").exists())
+        self.assertTrue((probe / PUBLISHED).exists())
 
     def test_upload_failure_commits_no_manifest_and_skips_checker(self):
         before = self.remote_head()
