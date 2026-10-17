@@ -61,9 +61,17 @@ All logic is in `tools/publish_rustup_dist.sh`. It uploads the components, check
 that every manifest URL resolves to its declared sha256, and only then commits
 the manifests. A failed upload or check publishes no manifest. If the release
 `rustup-<X.Y.Z>-<date>` exists and a manifest for that date is already
-published, the run refuses; use a new date. A release left over from a failed
-run (no published manifest) is deleted and recreated. Runs are serialized by the
-`rustup-dist-publish` concurrency group.
+published, the run refuses. The emitter also requires a date strictly later than
+any existing dated directory under `dist/`, so a same-day republish is not
+possible; use a later date (dates in the future are rejected). A release left
+over from a failed run (no published manifest) is deleted and recreated. Runs
+are serialized with `Publish Package` by their shared `publish-package`
+concurrency group, and the final push rebases onto `main` and retries a bounded
+number of times.
+
+Until [YurtOS/yurt-rust#72](https://github.com/YurtOS/yurt-rust/pull/72) merges,
+the default `tooling_ref` of `main` does not contain the emitter and the run
+fails; pass the PR's branch or SHA as `tooling_ref` until then.
 
 ### Setup and access
 
