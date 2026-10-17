@@ -213,6 +213,17 @@ class PublishRustupDist(unittest.TestCase):
         self.assertEqual(self.remote_head(), before)
         self.assertEqual(git("rev-parse", "HEAD", cwd=self.site), git("rev-parse", "origin/main", cwd=self.site))
 
+    def test_failed_run_leaves_no_modified_tracked_file_in_a_reused_checkout(self):
+        moving = f"dist/channel-rust-{VERSION}.toml"
+        (self.other / "dist" / "2026-01-01").mkdir(parents=True)
+        (self.other / moving).write_text("old\n")
+        (self.other / "dist" / "2026-01-01" / f"channel-rust-{VERSION}.toml").write_text("old\n")
+        self.commit_push(self.other, "earlier moving manifest")
+        git("pull", "-q", "origin", "main", cwd=self.site)
+        self.assertNotEqual(self.run_script(FAKE_CHECKER_FAIL="1").returncode, 0)
+        self.assertEqual(git("status", "--porcelain", cwd=self.site), "")
+        self.assertEqual((self.site / moving).read_text(), "old\n")
+
     def test_upload_failure_commits_no_manifest_and_skips_checker(self):
         before = self.remote_head()
         result = self.run_script(FAKE_UPLOAD_FAIL="1")
