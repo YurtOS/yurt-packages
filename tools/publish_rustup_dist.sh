@@ -23,6 +23,8 @@
 #   push     PLAN_*, DIST_DIR, DIGESTS (publish's digests), YURT_SITE_DIR, PUSH_TOKEN,
 #            GITHUB_RUN_ATTEMPT=1. Commits the five files onto a fresh main and pushes.
 #
+# This script does only token hygiene, gh, git and process boundaries. Every rule (inputs, plan,
+# release manifest, packing, artifact validation, dates) lives in rustup_dist_stage.py, run with -I.
 # Only emit runs tooling code (the emitter, without -I: it imports its siblings). The emitter is
 # started without GH_TOKEN in its environment, but it can still reach the read token through the
 # shared VM (the step shell, the runner); the contract accepts that, the token is read-only.
@@ -46,6 +48,9 @@ gh_cli() {
   if [[ -n "$GH_AUTH_TOKEN" ]]; then GH_TOKEN="$GH_AUTH_TOKEN" gh "$@"; else gh "$@"; fi
 }
 
+# The trusted rules. PLAN_* reach it through the environment; it re-derives and checks them itself.
+stage() { python3 -I "$STAGE" "$@"; }
+
 # Messages name variables and plan values (validated) only, never a string read from an artifact.
 die() { echo "publish_rustup_dist: $*" >&2; exit 1; }
 
@@ -60,26 +65,6 @@ empty_or_absent() {
 
 require_first_attempt() {
   [[ "${GITHUB_RUN_ATTEMPT:-}" == 1 ]] || die "GITHUB_RUN_ATTEMPT must be 1: rerunning a single job is refused, dispatch a new run"
-}
-
-# The PLAN_* values must be exactly what plan derives from them (same rules, same today).
-check_plan() {
-  require PLAN_RELEASE_TAG PLAN_VERSION PLAN_REVISION PLAN_DATE PLAN_PRODUCER_HOST PLAN_TOOLING_SHA PLAN_TAG
-  local derived expected
-  derived="$(mktemp "${TMPDIR:-/tmp}/rustup-plan.XXXXXX")"
-  expected="$(mktemp "${TMPDIR:-/tmp}/rustup-plan.XXXXXX")"
-  printf '%s\n' "release_tag=$PLAN_RELEASE_TAG" "version=$PLAN_VERSION" "revision=$PLAN_REVISION" "date=$PLAN_DATE" \
-    "producer_host=$PLAN_PRODUCER_HOST" "tooling_sha=$PLAN_TOOLING_SHA" "tag=$PLAN_TAG" > "$expected"
-  if OUTPUT_FILE="$derived" python3 -I "$STAGE" plan --release "$PLAN_RELEASE_TAG" --date "$PLAN_DATE" \
-    --producer-host "$PLAN_PRODUCER_HOST" --tooling-sha "$PLAN_TOOLING_SHA" && cmp -s "$derived" "$expected"; then
-    rm -f "$derived" "$expected"
-  else
-    rm -f "$derived" "$expected"
-    die "the PLAN_* values are not the plan derived from PLAN_RELEASE_TAG, PLAN_DATE, PLAN_PRODUCER_HOST and PLAN_TOOLING_SHA"
-  fi
-  FIVE=("dist/channel-rust-$PLAN_VERSION.toml" "dist/channel-rust-$PLAN_VERSION.toml.sha256"
-    "dist/$PLAN_DATE/channel-rust-$PLAN_VERSION.toml" "dist/$PLAN_DATE/channel-rust-$PLAN_VERSION.toml.sha256"
-    "dist/$PLAN_DATE/yurt-release-manifest.json")
 }
 
 # SITE gets reset and cleaned: it must be a checkout of its own, never a directory inside another repo.
@@ -110,23 +95,14 @@ reset_site() {
 
 phase_plan() {
   require OUTPUT_FILE
-  # Validate everything before the first gh call.
-  [[ -n "${RUST_RELEASE:-}" ]] || die "RUST_RELEASE is required"
-  [[ "$RUST_RELEASE" =~ ^rust-v[0-9]+\.[0-9]+\.[0-9]+-[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "RUST_RELEASE is not rust-vX.Y.Z-A.B.C"
-  local publish_date sha
-  publish_date="${PUBLISH_DATE:-$(date -u +%F)}"
-  [[ "$publish_date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || die "PUBLISH_DATE is not a real YYYY-MM-DD"
-  python3 -I -c 'import datetime,sys; datetime.date.fromisoformat(sys.argv[1])' "$publish_date" 2> /dev/null || die "PUBLISH_DATE is not a real YYYY-MM-DD"
-  [[ ! "$publish_date" > "$(date -u +%F)" ]] || die "PUBLISH_DATE must not be in the future"
-  case "${PRODUCER_HOST:-}" in
-    aarch64-apple-darwin | x86_64-unknown-linux-gnu | aarch64-unknown-linux-gnu) ;;
-    *) die "PRODUCER_HOST must be one of the three supported hosts" ;;
-  esac
+  # Validate everything before the first gh call. TOOLING_REF is checked here because it is
+  # interpolated into the gh api path; the other inputs are the stage module's.
+  stage check-inputs
   [[ "${TOOLING_REF:-}" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ && "${TOOLING_REF:-}" != *..* ]] || die "TOOLING_REF is not a plain ref name or SHA"
-
+  local sha
   sha="$(gh_cli api "repos/$RUST_REPO/commits/$TOOLING_REF" --jq .sha)" || die "cannot resolve TOOLING_REF in $RUST_REPO"
   [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || die "TOOLING_REF did not resolve to a 40-hex commit SHA"
-  python3 -I "$STAGE" plan --release "$RUST_RELEASE" --date "$publish_date" --producer-host "$PRODUCER_HOST" --tooling-sha "$sha"
+  stage plan --tooling-sha "$sha"
 }
 
 emit_cleanup() {
@@ -137,7 +113,7 @@ emit_cleanup() {
 }
 
 phase_emit() {
-  check_plan
+  stage check-plan # before the PLAN_* values reach gh or the emitter
   require YURT_RUST_TOOLING_DIR YURT_SITE_DIR OUT_DIR
   local tooling="$YURT_RUST_TOOLING_DIR" out="$OUT_DIR" head
   SITE="$YURT_SITE_DIR"
@@ -155,64 +131,32 @@ phase_emit() {
   trap emit_cleanup EXIT
   mkdir -p "$WORK/release" "$WORK/dist" "$out/dist"
 
-  # The release's own manifest must name exactly the planned release.
   gh_cli release download "$PLAN_RELEASE_TAG" -R "$RUST_REPO" -D "$WORK/release"
-  python3 -I -c '
-import json, sys
-try:
-    with open(sys.argv[1], encoding="utf-8") as handle:
-        release = json.load(handle)["release"]
-    same = [release["tag"], release["rust_version"], release["revision"]] == sys.argv[2:5]
-except (OSError, ValueError, KeyError, TypeError):
-    same = False
-sys.exit(0 if same else 1)' "$WORK/release/release-manifest.json" "$PLAN_RELEASE_TAG" "$PLAN_VERSION" "$PLAN_REVISION" ||
-    die "the release manifest's tag, rust_version or revision does not match the plan for $PLAN_RELEASE_TAG"
-
+  stage check-release --manifest "$WORK/release/release-manifest.json"
   python3 "$tooling/scripts/emit_rustup_dist.py" --release-dir "$WORK/release" --site "$SITE" \
     --components "$out/components" --date "$PLAN_DATE" --producer-host "$PLAN_PRODUCER_HOST" \
     --base-url "https://github.com/$PACKAGES_REPO/releases/download/$PLAN_TAG"
-
-  # Pack exactly the five files: explicit names, regular files only, no directory entries.
-  python3 -I -c '
-import os, stat, sys, tarfile
-site, target, names = sys.argv[1], sys.argv[2], sys.argv[3:]
-with tarfile.open(target, "x", format=tarfile.PAX_FORMAT) as tar:
-    for name in names:
-        try:
-            fd = os.open(os.path.join(site, name), os.O_RDONLY | os.O_NOFOLLOW)
-        except OSError:
-            sys.exit(f"publish_rustup_dist: the emitter did not write {name} as a regular file")
-        with os.fdopen(fd, "rb") as handle:
-            status = os.fstat(fd)
-            if not stat.S_ISREG(status.st_mode):
-                sys.exit(f"publish_rustup_dist: the emitter did not write {name} as a regular file")
-            info = tarfile.TarInfo(name)
-            info.size, info.mode, info.mtime = status.st_size, 0o644, 0
-            tar.addfile(info, handle)' "$SITE" "$WORK/dist/dist.tar" "${FIVE[@]}"
-  # Self-check with the validator publish uses (the date rules are publish's and push's).
-  python3 -I "$STAGE" validate-dist --dir "$WORK/dist"
+  # Packs exactly the five files and reads the tar back with the validator publish uses.
+  stage pack --site "$SITE" --out "$WORK/dist/dist.tar"
   mv "$WORK/dist/dist.tar" "$out/dist/dist.tar"
   echo "emitted $PLAN_TAG" >&2
 }
 
 phase_publish() {
   require_first_attempt
-  require OUTPUT_FILE
-  check_plan
-  require DIST_DIR COMPONENTS_DIR YURT_SITE_DIR
+  require OUTPUT_FILE DIST_DIR COMPONENTS_DIR YURT_SITE_DIR
   SITE="$YURT_SITE_DIR"
   require_site_checkout
   WORK="$(mktemp -d "${TMPDIR:-/tmp}/rustup-dist.XXXXXX")"
   trap 'rm -rf "$WORK"' EXIT
 
-  # Hash the components first (the slow part), so that the fresh fetch, the date rules and the
-  # release mutation follow each other closely.
-  OUTPUT_FILE="$WORK/outputs" python3 -I "$STAGE" validate-components --dist-dir "$DIST_DIR" --dir "$COMPONENTS_DIR"
+  # Checks the plan, then both artifacts (the components are the slow part), so that the fresh
+  # fetch, the date rules and the release mutation follow each other closely.
+  OUTPUT_FILE="$WORK/outputs" stage validate-components --dist-dir "$DIST_DIR" --dir "$COMPONENTS_DIR"
   # Eligibility on fresh state: a manifest published for this date (or a later one) refuses, so the
   # assets of a published manifest are never deleted or overwritten.
-  # (DIST_DIR is outside the site and validate-components already validated it.)
   reset_site
-  python3 -I "$STAGE" check-dates --site "$SITE"
+  stage check-dates --site "$SITE"
   # The delete below is safe only because the workflow-level publish-package concurrency group
   # serializes whole runs: no other run can publish a manifest for this tag between the date-rule
   # check above and the delete (tests/test_publish_workflow.py asserts the group).
@@ -240,10 +184,11 @@ push_site() {
     site_cmd push --quiet "$SITE_URL" "HEAD:$PAGES_BRANCH"
 }
 
+# $1: the paths apply wrote, one per line (always exactly expected_paths of the plan).
 stage_five() {
   local expected staged modes
   site_cmd add -A
-  expected="$(printf '%s\n' "${FIVE[@]}" | LC_ALL=C sort)"
+  expected="$(LC_ALL=C sort <<< "$1")"
   staged="$(git -C "$SITE" diff --cached --name-only --no-renames | LC_ALL=C sort)"
   [[ "$staged" == "$expected" ]] || die "the staged change is not exactly the five dist paths"
   modes="$(git -C "$SITE" diff --cached --raw --no-renames | awk '{print $2}' | sort -u)"
@@ -252,7 +197,6 @@ stage_five() {
 
 phase_push() {
   require_first_attempt
-  check_plan
   require DIST_DIR YURT_SITE_DIR
   [[ -n "${DIGESTS:-}" ]] || die "DIGESTS is required: the digests output of publish"
   [[ -n "$PUSH_AUTH_TOKEN" ]] || die "PUSH_TOKEN is required"
@@ -262,15 +206,15 @@ phase_push() {
   WORK="$(mktemp -d "${TMPDIR:-/tmp}/rustup-dist.XXXXXX")"
   trap 'reset_site || true; rm -rf "$WORK"' EXIT
 
-  # The artifact must be the one publish validated, before anything is staged.
-  python3 -I "$STAGE" validate-dist --dir "$DIST_DIR"
+  # Checks the plan, then that the artifact is the one publish validated, before anything is staged.
+  stage validate-dist --dir "$DIST_DIR"
   # Never rebase onto a newer main: every attempt starts from a fresh main and rechecks the date
-  # rules there (apply), so a publication that landed meanwhile fails closed.
-  local attempt
+  # rules there (apply, before it writes), so a publication that landed meanwhile fails closed.
+  local attempt written
   for attempt in 1 2 3; do
     reset_site
-    python3 -I "$STAGE" apply --dist-dir "$DIST_DIR" --site "$SITE" >&2
-    stage_five
+    written="$(stage apply --dist-dir "$DIST_DIR" --site "$SITE")"
+    stage_five "$written"
     site_git commit --quiet -m "chore: publish rustup dist $PLAN_VERSION $PLAN_DATE"
     if push_site; then
       echo "published $PLAN_TAG" >&2

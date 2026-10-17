@@ -1,29 +1,34 @@
 #!/usr/bin/env python3
-"""Validate staged rustup dist artifacts as data, for the privileged publish and push jobs.
+"""The trusted rules of the rustup dist publisher: inputs, plan, artifacts, dates.
 
 Everything here is trusted code: identity comes only from the plan, the artifacts are untrusted
 output of tooling code and are inspected (never executed, never extracted blindly) before use.
 Standard library only, no sibling imports; run with `python3 -I`.
 
-Subcommands (plan values come from PLAN_* in the environment, except for `plan` itself):
-  plan --release R --date D --producer-host H --tooling-sha S
-      validate the inputs and append release_tag, version, revision, date, producer_host,
-      tooling_sha and tag as key=value lines to $OUTPUT_FILE
-  validate-dist --dir D --site S
-      date rules against S, then D must hold exactly one regular dist.tar with valid content;
-      if DIGESTS is set and not empty, the artifact must match it
+Subcommands. The inputs RUST_RELEASE, PUBLISH_DATE (empty: today, UTC) and PRODUCER_HOST come from
+the environment for check-inputs and plan; every other command takes the plan from PLAN_*.
+  check-inputs                validate the inputs; writes nothing
+  plan --tooling-sha S        validate the inputs and append release_tag, version, revision, date,
+                              producer_host, tooling_sha and tag as key=value lines to $OUTPUT_FILE
+  check-plan                  PLAN_* must be exactly the plan derived from its own inputs
+  check-release --manifest F  the yurt-rust release manifest F must name the planned release
+  pack --site S --out T       write the five files the emitter left under S as dist.tar T (PAX,
+                              mode 0644, mtime 0, no directory entries), then read T back
+  validate-dist --dir D       D must hold exactly one regular dist.tar with valid content; if
+                              DIGESTS is set and not empty, the artifact must match it
+  check-dates --site S        the date rules against the checkout S
   validate-components --dist-dir D --dir C
-      validate D as above (no date rules), then the component files in C against the manifest;
-      append digests=<compact JSON> to $OUTPUT_FILE
-  apply --dist-dir D --site S
-      requires DIGESTS; date rules, validation, digest check, then write the five files into S
-      and print their paths, one per line
+                              validate D, then the component files in C against the manifest;
+                              append digests=<compact JSON> to $OUTPUT_FILE
+  apply --dist-dir D --site S requires DIGESTS; validation, digest check, date rules, then write
+                              the five files into S and print their paths, one per line
 """
 
 import argparse
 import collections
 import datetime
 import hashlib
+import io
 import json
 import math
 import os
@@ -97,6 +102,46 @@ def make_plan(release: str, date: str, producer_host: str, tooling_sha: str, tod
     return Plan(release, version, revision, date, producer_host, tooling_sha, f"rustup-{version}-{date}")
 
 
+def utc_today() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+
+
+def inputs_from_env(today: str) -> tuple[str, str, str]:
+    """The plan job's inputs (RUST_RELEASE, PUBLISH_DATE, PRODUCER_HOST); errors name the variable."""
+    release = os.environ.get("RUST_RELEASE", "")
+    if not release:
+        raise StageError("RUST_RELEASE is required")
+    if not RELEASE_RE.fullmatch(release):
+        raise StageError(f"RUST_RELEASE {release!r} is not rust-vX.Y.Z-A.B.C")
+    date = os.environ.get("PUBLISH_DATE", "") or today
+    if not real_date(date):
+        raise StageError(f"PUBLISH_DATE {date!r} is not a real YYYY-MM-DD date")
+    if date > today:
+        raise StageError(f"PUBLISH_DATE {date} must not be in the future (today is {today})")
+    host = os.environ.get("PRODUCER_HOST", "")
+    if host not in HOSTS:
+        raise StageError(f"PRODUCER_HOST {host!r} must be one of the supported hosts {', '.join(HOSTS)}")
+    return release, date, host
+
+
+def check_release_manifest(path: Path, plan: Plan) -> None:
+    """The downloaded yurt-rust release manifest must name exactly the planned release."""
+    try:
+        status = path.lstat()
+        if not stat.S_ISREG(status.st_mode) or status.st_size > MAX_MEMBER_BYTES:
+            raise ValueError("not a regular file within the size cap")
+        value = json.loads(
+            path.read_bytes().decode("utf-8"),
+            object_pairs_hook=reject_duplicates, parse_constant=reject_constant, parse_float=finite_float,
+        )
+        release = value["release"]
+        same = [release["tag"], release["rust_version"], release["revision"]] == [plan.release_tag, plan.version, plan.revision]
+    except (OSError, ValueError, KeyError, TypeError, RecursionError):
+        same = False
+    if not same:
+        raise StageError(f"the release manifest's tag, rust_version or revision does not match the plan for {plan.release_tag}")
+
+
 def expected_paths(plan: Plan) -> tuple[str, str, str, str, str]:
     """moving manifest, moving sidecar, dated manifest, dated sidecar, provenance."""
     name = f"channel-rust-{plan.version}.toml"
@@ -119,6 +164,44 @@ def check_date_rules(site: Path, plan: Plan) -> None:
     newest = max((entry.name for entry in dist.iterdir() if real_date(entry.name)), default=None)
     if newest is not None and plan.date <= newest:
         raise StageError(f"date {plan.date} must be later than the newest dated dir {newest}")
+
+
+def read_emitted(site: Path, name: str) -> bytes:
+    """One file the emitter wrote under site: a regular file, with no link anywhere on its path."""
+    refused = StageError(f"the emitter did not write {name} as a regular file")
+    path = site
+    for part in PurePosixPath(name).parts[:-1]:
+        path = path / part
+        if not os.path.lexists(path) or not stat.S_ISDIR(path.lstat().st_mode):
+            raise refused
+    try:
+        fd = os.open(site / name, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        raise refused from None
+    status = os.fstat(fd)
+    if not stat.S_ISREG(status.st_mode):
+        os.close(fd)
+        raise refused
+    with os.fdopen(fd, "rb") as handle:
+        if status.st_size > MAX_MEMBER_BYTES:
+            raise StageError(f"the emitter wrote {name} larger than {MAX_MEMBER_BYTES} bytes")
+        return handle.read(MAX_MEMBER_BYTES + 1)
+
+
+def pack_dist(site: Path, out: Path, plan: Plan) -> None:
+    """dist.tar from exactly the five expected paths, then read back with the validator publish uses."""
+    members = [(name, read_emitted(site, name)) for name in expected_paths(plan)]
+    tar = tarfile.open(out, "x", format=tarfile.PAX_FORMAT)  # never overwrites; nothing to clean up if it exists
+    try:
+        with tar:
+            for name, data in members:
+                info = tarfile.TarInfo(name)
+                info.size, info.mode, info.mtime = len(data), 0o644, 0
+                tar.addfile(info, io.BytesIO(data))
+        read_dist_tar(out, plan)
+    except BaseException:
+        out.unlink(missing_ok=True)
+        raise
 
 
 def read_dist_dir(directory: Path, plan: Plan) -> dict[str, bytes]:
@@ -443,8 +526,10 @@ def plan_from_env() -> Plan:
     env = {key: os.environ.get(f"PLAN_{key.upper()}", "") for key in Plan.__dataclass_fields__}
     if not env["date"]:
         raise StageError("PLAN_DATE is empty; the plan must fix the date")
-    today = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
-    plan = make_plan(env["release_tag"], env["date"], env["producer_host"], env["tooling_sha"], today)
+    try:
+        plan = make_plan(env["release_tag"], env["date"], env["producer_host"], env["tooling_sha"], utc_today())
+    except StageError as error:
+        raise StageError(f"the PLAN_* values are not a valid plan: {error}") from None
     for key, value in env.items():
         if getattr(plan, key) != value:
             raise StageError(f"PLAN_{key.upper()} {value!r} does not match the plan derived from the inputs ({getattr(plan, key)!r})")
@@ -473,13 +558,19 @@ def expected_digests() -> dict:
 
 
 def run(args: argparse.Namespace) -> None:
-    if args.command == "plan":
-        today = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
-        plan = make_plan(args.release, args.date, args.producer_host, args.tooling_sha, today)
-        write_outputs({key: getattr(plan, key) for key in Plan.__dataclass_fields__})
+    if args.command in ("check-inputs", "plan"):
+        today = utc_today()
+        release, date, host = inputs_from_env(today)
+        if args.command == "plan":
+            plan = make_plan(release, date, host, args.tooling_sha, today)
+            write_outputs({key: getattr(plan, key) for key in Plan.__dataclass_fields__})
         return
     plan = plan_from_env()
-    if args.command == "validate-dist":
+    if args.command == "check-release":
+        check_release_manifest(Path(args.manifest), plan)
+    elif args.command == "pack":
+        pack_dist(Path(args.site), Path(args.out), plan)
+    elif args.command == "validate-dist":
         dist = read_dist_dir(Path(args.dir), plan)
         if os.environ.get("DIGESTS"):
             verify_digests(expected_digests(), compute_digests(Path(args.dir) / "dist.tar", dist, None))
@@ -506,11 +597,15 @@ def one_line(text: str) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="rustup_dist_stage.py", description=__doc__.split("\n")[0])
     commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("check-inputs")
     plan = commands.add_parser("plan")
-    plan.add_argument("--release", required=True)
-    plan.add_argument("--date", required=True)
-    plan.add_argument("--producer-host", required=True)
     plan.add_argument("--tooling-sha", required=True)
+    commands.add_parser("check-plan")
+    release = commands.add_parser("check-release")
+    release.add_argument("--manifest", required=True)
+    pack = commands.add_parser("pack")
+    pack.add_argument("--site", required=True)
+    pack.add_argument("--out", required=True)
     validate = commands.add_parser("validate-dist")
     validate.add_argument("--dir", required=True)
     dates = commands.add_parser("check-dates")
