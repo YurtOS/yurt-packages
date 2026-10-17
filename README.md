@@ -101,10 +101,6 @@ out after it landed) a published manifest. The next dispatch handles the first
 two by recreating the release. For the third it refuses: check `main`.
 Artifacts are kept for one day.
 
-Until [YurtOS/yurt-rust#72](https://github.com/YurtOS/yurt-rust/pull/72) merges,
-the default `tooling_ref` of `main` does not contain the emitter and the run
-fails; pass the PR's branch or SHA as `tooling_ref` until then.
-
 ### Setup and access
 
 - `YURT_RUST_READ_TOKEN` (repository secret): a fine-grained PAT for
@@ -129,9 +125,9 @@ fails; pass the PR's branch or SHA as `tooling_ref` until then.
 - First-dispatch checklist (needs the maintainer's go; nothing here has run on a
   hosted runner yet):
   - The organization may need to approve the two fine-grained PATs.
-  - An organization or repository policy that limits `GITHUB_TOKEN` to read makes
-    `publish` fail: a job's `contents: write` cannot exceed that cap. Allow
-    read and write workflow permissions for this repository.
+  - An organization policy can limit `GITHUB_TOKEN` to read, and a job's
+    `contents: write` cannot exceed that limit. If `publish` fails with a 403 on
+    `release create`, such a policy is the cause.
   - `YURT_RUST_READ_TOKEN` is a repository secret, so a workflow on any branch can
     read it. This is accepted: it is read-only, on the repository whose tooling
     the dispatcher already chooses.
