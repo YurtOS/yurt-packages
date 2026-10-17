@@ -1,5 +1,6 @@
 """Tests for tools/publish_rustup_dist.sh using a gh shim, a local bare Pages remote and stub tooling."""
 import base64
+import datetime
 import json
 import os
 import subprocess
@@ -9,7 +10,7 @@ import unittest
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parent.parent / "tools" / "publish_rustup_dist.sh"
-RELEASE, DATE, VERSION = "rust-v1.99.0-0.0.1", "2026-10-20", "1.99.0"
+RELEASE, DATE, VERSION = "rust-v1.99.0-0.0.1", "2026-10-01", "1.99.0"
 TAG = f"rustup-{VERSION}-{DATE}"
 PUBLISHED = f"dist/{DATE}/channel-rust-{VERSION}.toml"
 AUTH_HEADER = "AUTHORIZATION: basic " + base64.b64encode(b"x-access-token:secret-token").decode()
@@ -38,6 +39,7 @@ a = p.parse_args()
 import os
 open(pathlib.Path(a.site).parent / "emit.log", "w").write(" ".join(sys.argv[1:]))
 import base64
+import datetime
 needles = (b"secret-token", base64.b64encode(b"x-access-token:secret-token"))
 leaks = [str(f) for f in (pathlib.Path(a.site) / ".git").rglob("*") if f.is_file() and any(n in f.read_bytes() for n in needles)]
 open(pathlib.Path(a.site).parent / "emit.leak", "w").write(chr(10).join(leaks))
@@ -148,6 +150,16 @@ class PublishRustupDist(unittest.TestCase):
                     self.assertEqual(self.calls(), [])
         self.assertNotEqual(self.run_script(RUST_RELEASE=None).returncode, 0)
         self.assertEqual(self.calls(), [])
+
+    def test_future_date_rejected_and_empty_date_means_today_utc(self):
+        future = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=2)).strftime("%F")
+        result = self.run_script(PUBLISH_DATE=future)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("PUBLISH_DATE", result.stderr)
+        self.assertEqual(self.calls(), [])
+        today = datetime.datetime.now(datetime.timezone.utc).strftime("%F")
+        self.assertEqual(self.run_script(PUBLISH_DATE="").returncode, 0)
+        self.assertIn(f"--date {today}", (self.root / "work" / "emit.log").read_text())
 
     def test_publishes_and_records_tooling_sha(self):
         result = self.run_script()
