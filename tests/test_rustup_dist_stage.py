@@ -824,6 +824,14 @@ class ParserLimitTests(Case):
         self.assertLess(len(text), stage.MAX_MEMBER_BYTES)
         self.raises("dated manifest is not valid TOML", stage.read_dist_tar, self.tar_of(dist_members(manifest=text)), PLAN)
 
+    def test_manifest_integer_beyond_the_digit_limit(self):
+        text = "a = " + "1" * 5000 + "\n"
+        self.raises("dated manifest is not valid TOML", stage.read_dist_tar, self.tar_of(dist_members(manifest=text)), PLAN)
+
+    def test_provenance_integer_beyond_the_digit_limit(self):
+        data = b'{"a": ' + b"1" * 5000 + b"}"
+        self.raises("provenance is not valid JSON", stage.read_dist_tar, self.tar_of(dist_members(prov=data)), PLAN)
+
     def test_deeply_nested_manifest_inline_tables(self):
         text = "a = " + "{ b = " * 100000
         self.assertLess(len(text), stage.MAX_MEMBER_BYTES)
