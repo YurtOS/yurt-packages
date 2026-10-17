@@ -77,6 +77,22 @@ def secrets_in(node) -> set[str]:
     return set(re.findall(r"secrets\.([A-Za-z0-9_]+)", json.dumps(node)))
 
 
+def secret_violations(text: str) -> list[str]:
+    """Every way the workflow text could hand a job a secret (or the GITHUB_TOKEN) it must not see."""
+    wf = yaml.safe_load(text)
+    jobs = wf.get("jobs") or {}
+    bad = []
+    for name, job in jobs.items():
+        extra = secrets_in(job) - SECRETS.get(name, set())
+        if extra:
+            bad.append(f"{name}: secrets {sorted(extra)} not allowed")
+    if secrets_in({key: value for key, value in wf.items() if key != "jobs"}):
+        bad.append("a secret outside jobs")
+    if "PACKAGE_PUBLISH_TOKEN" in text or "secrets[" in text:
+        bad.append("PACKAGE_PUBLISH_TOKEN or an indexed secrets reference")
+    return bad
+
+
 def uses_name(step: dict) -> str:
     return step.get("uses", "").split("@", 1)[0]
 
@@ -409,6 +425,67 @@ class WorkflowStructureTest(unittest.TestCase):
                     self.assertTrue(found)
                 else:
                     self.assertEqual(found, [])
+
+
+EMIT_ENV = "          WORK_DIR: ${{ runner.temp }}/rustup-work\n"
+PUSH_ENV = "          PUSH_TOKEN: ${{ secrets.RUSTUP_DIST_PUBLISH_TOKEN }}\n"
+EMIT_RUN = '        run: |\n          "$GITHUB_WORKSPACE/trusted/tools/publish_rustup_dist.sh" emit\n'
+PLAN_CHECKOUT = "          path: trusted\n          persist-credentials: false\n"
+PUBLISH_SITE = "          ref: main\n          path: site\n          persist-credentials: false\n\n      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0\n        with:\n          python-version: \"3.13\"\n\n      - name: Check the artifact ids\n"
+
+
+def add(anchor: str, lines: str) -> tuple[str, str]:
+    return anchor, anchor + lines
+
+
+# Each mutation is a list of (old, new) replacements of the first occurrence in the workflow text.
+SECRET_MUTATIONS = {
+    "toJSON(secrets) in emit": [add(EMIT_ENV, "          ALL: ${{ toJSON(secrets) }}\n")],
+    "secrets['X'] in emit": [add(EMIT_ENV, "          ALL: ${{ secrets['YURT_RUST_READ_TOKEN'] }}\n")],
+    'secrets["X"] in emit': [add(EMIT_ENV, "          ALL: '${{ secrets[\"RUSTUP_DIST_PUBLISH_TOKEN\"] }}'\n")],
+    "join(secrets) in emit": [add(EMIT_ENV, "          ALL: ${{ join(secrets, ',') }}\n")],
+    "secrets.* in emit": [add(EMIT_ENV, "          ALL: ${{ toJSON(secrets.*) }}\n")],
+    "mixed-case Secrets.X in emit": [add(EMIT_ENV, "          ALL: ${{ Secrets.RUSTUP_DIST_PUBLISH_TOKEN }}\n")],
+    "multi-line expression in emit": [
+        add(EMIT_ENV, "          ALL: >-\n            ${{ toJSON(\n            secrets) }}\n")
+    ],
+    "escaped dollar in emit": [add(EMIT_ENV, '          ALL: "\\x24{{ toJSON(secrets) }}"\n')],
+    "comment-looking line in a block scalar": [add(EMIT_ENV, "          ALL: |\n            # ${{ toJSON(secrets) }}\n")],
+    "anchor and alias carry the read token to push": [
+        (EMIT_ENV, EMIT_ENV + "          ALL: &tok ${{ secrets.YURT_RUST_READ_TOKEN }}\n"),
+        add(PUSH_ENV, "          ALL: *tok\n"),
+    ],
+    "merge key carries emit's step env to push": [
+        ("      - name: Emit the dist and the components\n        env:\n", "      - name: Emit the dist and the components\n        env: &emitenv\n"),
+        (PUSH_ENV, PUSH_ENV + "          <<: *emitenv\n"),
+    ],
+    "step if on secrets": [(EMIT_RUN, "        if: contains(toJSON(secrets), 'x')\n" + EMIT_RUN)],
+    "github.token in emit": [add(EMIT_ENV, "          T: ${{ github.token }}\n")],
+    "GITHUB.TOKEN in emit": [add(EMIT_ENV, "          T: ${{ GITHUB.TOKEN }}\n")],
+    "github['token'] in emit": [add(EMIT_ENV, "          T: ${{ github['token'] }}\n")],
+    "toJSON(github) in emit": [add(EMIT_ENV, "          T: ${{ toJSON(github) }}\n")],
+    "secrets.GITHUB_TOKEN in push": [add(PUSH_ENV, "          T: ${{ secrets.GITHUB_TOKEN }}\n")],
+    "github.token on the plan checkout": [(PLAN_CHECKOUT, "          path: trusted\n          token: ${{ github.token }}\n          persist-credentials: false\n")],
+    "secrets.GITHUB_TOKEN on a publish checkout": [
+        (PUBLISH_SITE, PUBLISH_SITE.replace("          path: site\n", "          path: site\n          token: ${{ secrets.GITHUB_TOKEN }}\n", 1))
+    ],
+}
+
+
+class SecretReferenceTest(unittest.TestCase):
+    def test_the_workflow_has_no_secret_violation(self) -> None:
+        self.assertEqual(secret_violations(WORKFLOW.read_text(encoding="utf-8")), [])
+
+    def test_every_secret_leak_form_is_caught(self) -> None:
+        source = WORKFLOW.read_text(encoding="utf-8")
+        for label, replacements in SECRET_MUTATIONS.items():
+            with self.subTest(mutation=label):
+                text = source
+                for old, new in replacements:
+                    self.assertIn(old, text, "mutation anchor not found")
+                    text = text.replace(old, new, 1)
+                yaml.safe_load(text)  # still a valid YAML document
+                self.assertNotEqual(secret_violations(text), [])
 
 
 TOOLING_DIR = os.environ.get("YURT_RUST_TOOLING_DIR", "")
