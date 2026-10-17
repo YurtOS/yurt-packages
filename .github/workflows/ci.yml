@@ -21,7 +21,8 @@ jobs:
       - name: shellcheck
         run: shellcheck tools/publish_rustup_dist.sh
       # Runs test_publish_workflow.py (static checks of the five-job workflow; fails without
-      # PyYAML), test_publish_rustup_dist.py (phases) and test_rustup_dist_stage.py (validator).
+      # PyYAML), test_publish_rustup_dist.py (phases), test_rustup_dist_stage.py and
+      # test_rustup_dist_stage_cli.py (validator); support_*.py are their shared fixtures.
       # The tooling smoke test in test_publish_workflow.py skips here: CI cannot read yurt-rust.
       - name: Publication script and workflow tests
         run: python3 -m unittest discover -s tests -v
