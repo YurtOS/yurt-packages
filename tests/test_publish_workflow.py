@@ -64,6 +64,20 @@ DOWNLOADS = {
 MAIN_GUARD = "github.ref == 'refs/heads/main'"
 SHA_PIN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}$")
 SCRIPT = '"$GITHUB_WORKSPACE/trusted/tools/publish_rustup_dist.sh"'
+CHECK_RUN = (
+    'tar -xf "$DIST_DIR/dist.tar" -C "$DIST_DIR"\n'
+    'python3 "$GITHUB_WORKSPACE/tooling/scripts/verify_rustup_dist_urls.py" --dist "$DIST_DIR/dist" '
+    '--channel "$PLAN_VERSION" --date "$PLAN_DATE"\n'
+)
+IDS_BOTH_RUN = (
+    '[[ "$DIST_ID" =~ ^[0-9]+$ && "$COMPONENTS_ID" =~ ^[0-9]+$ ]] || '
+    '{ echo "an artifact id from emit is not all digits" >&2; exit 1; }\n'
+    "printf 'dist_artifact_id=%s\\ncomponents_artifact_id=%s\\n' \"$DIST_ID\" \"$COMPONENTS_ID\" >> \"$GITHUB_OUTPUT\"\n"
+)
+IDS_DIST_RUN = (
+    '[[ "$DIST_ID" =~ ^[0-9]+$ ]] || { echo "the dist artifact id from emit is not all digits" >&2; exit 1; }\n'
+    "printf 'dist_artifact_id=%s\\n' \"$DIST_ID\" >> \"$GITHUB_OUTPUT\"\n"
+)
 
 
 def load() -> dict:
@@ -358,12 +372,32 @@ class WorkflowStructureTest(unittest.TestCase):
         self.assertFalse([s for s in self.steps("check") if SCRIPT in s.get("run", "")])
 
     def test_check_runs_the_tooling_checker_on_the_planned_values(self) -> None:
+        # Exact: the URL check gates push only if nothing (|| true, ; true, set +e) swallows its status.
         runs = [s for s in self.steps("check") if "verify_rustup_dist_urls.py" in s.get("run", "")]
         self.assertEqual(len(runs), 1)
-        run = runs[0]["run"]
-        self.assertNotRegex(run, r"python3?\s+-I")
-        for flag in ('--channel "$PLAN_VERSION"', '--date "$PLAN_DATE"', "--dist "):
-            self.assertIn(flag, run)
+        self.assertEqual(runs[0]["run"], CHECK_RUN)
+        self.assertEqual(runs[0].get("env"), {"DIST_DIR": "${{ runner.temp }}/dist-artifact"})
+
+    def test_nothing_continues_on_error(self) -> None:
+        for name in JOBS:
+            with self.subTest(job=name):
+                self.assertNotIn("continue-on-error", self.job(name))
+                for step in self.steps(name):
+                    self.assertNotIn("continue-on-error", step)
+
+    def test_artifact_id_checks_are_exact(self) -> None:
+        expected = {
+            "publish": (IDS_BOTH_RUN, {"DIST_ID": "${{ needs.emit.outputs.dist_artifact_id }}",
+                                       "COMPONENTS_ID": "${{ needs.emit.outputs.components_artifact_id }}"}),
+            "check": (IDS_DIST_RUN, {"DIST_ID": "${{ needs.emit.outputs.dist_artifact_id }}"}),
+            "push": (IDS_DIST_RUN, {"DIST_ID": "${{ needs.emit.outputs.dist_artifact_id }}"}),
+        }
+        for name, (run, env) in expected.items():
+            with self.subTest(job=name):
+                checks = [s for s in self.steps(name) if s.get("id") == "ids"]
+                self.assertEqual(len(checks), 1)
+                self.assertEqual(checks[0].get("run"), run)
+                self.assertEqual(checks[0].get("env"), env)
 
     def test_no_cache_in_privileged_jobs(self) -> None:
         for name in ("publish", "push"):
