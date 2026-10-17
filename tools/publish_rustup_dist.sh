@@ -196,6 +196,9 @@ phase_publish() {
   # assets of a published manifest are never deleted or overwritten.
   reset_site
   python3 -I "$STAGE" validate-dist --dir "$DIST_DIR" --site "$SITE"
+  # The delete below is safe only because the workflow-level publish-package concurrency group
+  # serializes whole runs: no other run can publish a manifest for this tag between the date-rule
+  # check above and the delete (tests/test_publish_workflow.py asserts the group).
   if gh_cli release view "$PLAN_TAG" -R "$PACKAGES_REPO" > /dev/null 2>&1; then
     echo "release $PLAN_TAG exists without a published manifest (earlier failed run); recreating it" >&2
     gh_cli release delete "$PLAN_TAG" -R "$PACKAGES_REPO" --yes --cleanup-tag

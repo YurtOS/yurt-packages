@@ -12,7 +12,10 @@ shell through `run:`. What only a hosted run proves is listed in the README.
 from __future__ import annotations
 
 import json
+import os
 import re
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -406,6 +409,40 @@ class WorkflowStructureTest(unittest.TestCase):
                     self.assertTrue(found)
                 else:
                     self.assertEqual(found, [])
+
+
+TOOLING_DIR = os.environ.get("YURT_RUST_TOOLING_DIR", "")
+
+
+@unittest.skipUnless(
+    TOOLING_DIR and (Path(TOOLING_DIR) / "scripts" / "emit_rustup_dist.py").is_file(),
+    "set YURT_RUST_TOOLING_DIR to a yurt-rust checkout to run the tooling smoke test",
+)
+class ToolingSmokeTest(unittest.TestCase):
+    """The real emitter and checker start without -I (they import their siblings) and accept
+    the flags that tools/publish_rustup_dist.sh and the check job pass. CI cannot read the
+    private yurt-rust, so this runs only locally; it is on the first-dispatch checklist."""
+
+    def help_text(self, script: str) -> str:
+        done = subprocess.run(
+            [sys.executable, str(Path(TOOLING_DIR) / "scripts" / script), "--help"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return done.stdout
+
+    def test_emitter_accepts_the_flags_emit_passes(self) -> None:
+        text = self.help_text("emit_rustup_dist.py")
+        for flag in ("--release-dir", "--site", "--components", "--date", "--producer-host", "--base-url"):
+            self.assertIn(flag, text)
+
+    def test_checker_accepts_the_flags_check_passes(self) -> None:
+        text = self.help_text("verify_rustup_dist_urls.py")
+        for flag in ("--dist", "--channel", "--date"):
+            self.assertIn(flag, text)
 
 
 if __name__ == "__main__":
