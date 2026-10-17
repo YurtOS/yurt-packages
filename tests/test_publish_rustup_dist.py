@@ -41,6 +41,7 @@ PUBLISHED = DATED
 COMPONENTS = sorted(
     [f"{p}-{VERSION}-{h}.tar.gz" for h in HOSTS for p in ("rustc", "cargo", "rust-std")] + [f"rust-std-{VERSION}-{GUEST}.tar.gz"]
 )
+SITE_URL = "https://github.com/YurtOS/yurt-packages"
 READ, GITHUB, PUSH = "read-token-secret", "github-token-secret", "push-token-secret"
 SECRETS = (READ, GITHUB, PUSH)
 AUTH_HEADER = "AUTHORIZATION: basic " + base64.b64encode(f"x-access-token:{PUSH}".encode()).decode()
@@ -298,9 +299,15 @@ class Harness(unittest.TestCase):
         self.counter += 1
         return self.root / f"{self.counter:02d}-{name}"
 
-    def fresh_site(self):
+    def fresh_site(self, origin=SITE_URL):
+        """A clone whose origin is the real URL, as actions/checkout leaves it; a site-local
+        insteadOf maps that URL (and the literal URL push uses) to the local bare remote."""
         site = self.unique("site")
         git("clone", str(self.remote), str(site), cwd=self.root)
+        git("remote", "set-url", "origin", origin, cwd=site)
+        git("config", f"url.{self.remote}.insteadOf", origin, cwd=site)
+        if origin != SITE_URL:
+            git("config", "--add", f"url.{self.remote}.insteadOf", SITE_URL, cwd=site)
         return site
 
     def run_phase(self, name, env):
@@ -397,19 +404,30 @@ class Harness(unittest.TestCase):
         return self.land({PUBLISHED: "earlier\n"}, "earlier publication")
 
     def race_on_first_push(self, site: Path, files, message="race"):
-        """Prepare a commit in `other`; site's first push lands it from a pre-push hook, so that push loses."""
+        """Prepare a commit in `other`; it lands just before the phase's first `git push`, so that push loses.
+
+        A `git` wrapper on the phase's PATH does it (the push runs with hooks disabled, so a pre-push
+        hook cannot). `site` is unused: the wrapper fires on the first push of any checkout."""
         commit = self.prepare_commit(files, message)
         flag = self.root / "race.flag"
         flag.touch()
-        hook = site / ".git" / "hooks" / "pre-push"
-        hook.write_text(
+        real = shutil.which("git", path=os.environ["PATH"])
+        wrapper = self.root / "bin" / "git"
+        wrapper.write_text(
             "#!/bin/sh\n"
-            f"[ -e {flag} ] || exit 0\n"
-            f"rm -f {flag}\n"
-            "unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_PARAMETERS\n"
-            f"git -C {self.other} push -q origin HEAD:main\n"
+            f'if [ -e "{flag}" ]; then\n'
+            '  for arg in "$@"; do\n'
+            '    if [ "$arg" = push ]; then\n'
+            f'      rm -f "{flag}"\n'
+            "      (unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_PARAMETERS\n"
+            f'       "{real}" -C "{self.other}" push -q origin HEAD:main) || exit 97\n'
+            "      break\n"
+            "    fi\n"
+            "  done\n"
+            "fi\n"
+            f'exec "{real}" "$@"\n'
         )
-        hook.chmod(0o755)
+        wrapper.chmod(0o755)
         return commit
 
     def remote_head(self):
@@ -876,6 +894,25 @@ class PushPhaseTests(Harness):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(marker.exists())
         self.assertTrue((self.probe() / PUBLISHED).exists())
+
+    def test_push_never_runs_hooks_of_the_site_checkout(self):
+        """The push carries the PAT in its environment: no hook of the checkout may run around it."""
+        marker = self.root / "hooked"
+        site = self.fresh_site()
+        for name in ("pre-push", "pre-commit", "commit-msg", "post-commit", "post-checkout", "reference-transaction"):
+            hook = site / ".git" / "hooks" / name
+            hook.write_text(f'#!/bin/sh\necho "{name} ${{GIT_CONFIG_VALUE_0:-}}" >> {marker}\nexit 0\n')
+            hook.chmod(0o755)
+        result = self.push(YURT_SITE_DIR=str(site))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(marker.exists(), marker.read_text() if marker.exists() else "")
+        self.assertTrue((self.probe() / PUBLISHED).exists())
+
+    def test_push_refuses_a_site_whose_origin_is_not_yurt_packages(self):
+        for origin in ("https://github.com/evil/yurt-packages", "/elsewhere/yurt-packages.git"):
+            with self.subTest(origin=origin):
+                site = self.fresh_site(origin=origin)
+                self.assert_refused(self.push(YURT_SITE_DIR=str(site)), "origin")
 
     def test_push_refuses_a_rerun_attempt(self):
         for attempt in ("2", "", None):

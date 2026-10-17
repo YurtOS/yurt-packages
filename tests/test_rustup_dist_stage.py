@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -836,6 +837,24 @@ class ParserLimitTests(Case):
         text = "a = " + "{ b = " * 100000
         self.assertLess(len(text), stage.MAX_MEMBER_BYTES)
         self.raises("dated manifest is not valid TOML", stage.read_dist_tar, self.tar_of(dist_members(manifest=text)), PLAN)
+
+    def test_provenance_nan_and_infinity_are_refused(self):
+        """json.loads accepts them, and apply would publish them as non-strict JSON."""
+        for constant in ("NaN", "Infinity", "-Infinity"):
+            with self.subTest(constant=constant):
+                data = json.dumps(provenance(), indent=2, sort_keys=True).replace('"version": "0.0.1"', f'"version": {constant}', 1)
+                self.assertIn(constant, data)
+                self.raises("provenance is not valid JSON", stage.read_dist_tar, self.tar_of(dist_members(prov=(data + "\n").encode())), PLAN)
+
+    def test_provenance_with_many_keys_is_parsed_in_linear_time(self):
+        many = {f"k{i}": 1 for i in range(20000)}
+        start = time.perf_counter()
+        self.assertEqual(len(stage.parse_provenance(json.dumps(many).encode())), 20000)
+        self.assertLess(time.perf_counter() - start, 1.0)
+        duplicated = (json.dumps(many)[:-1] + ', "k19999": 2}').encode()
+        start = time.perf_counter()
+        self.raises("duplicate keys ['k19999']", stage.parse_provenance, duplicated)
+        self.assertLess(time.perf_counter() - start, 1.0)
 
 
 INJECTED = "x\n::error::injected\n::add-mask::secret"

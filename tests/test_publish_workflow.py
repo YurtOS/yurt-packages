@@ -11,12 +11,16 @@ shell through `run:`. What only a hosted run proves is listed in the README.
 
 from __future__ import annotations
 
+import importlib.util
+import io
 import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 try:
@@ -36,7 +40,7 @@ NEEDS = {
     "push": ["plan", "emit", "publish", "check"],
 }
 PERMISSIONS = {
-    "plan": {},
+    "plan": {"contents": "read"},
     "emit": {"contents": "read"},
     "publish": {"contents": "write"},
     "check": {},
@@ -577,6 +581,61 @@ class SecretReferenceTest(unittest.TestCase):
                 self.assertNotEqual(secret_violations(text), [])
 
 
+CHECK_STEP = "      - name: Check every manifest URL against its sha256\n"
+CHECK_LINE = '--date "$PLAN_DATE"\n'
+PUBLISH_IDS_FAIL = ']] || { echo "an artifact id from emit is not all digits" >&2; exit 1; }'
+PUBLISH_IDS_TEST = '[[ "$DIST_ID" =~ ^[0-9]+$ && "$COMPONENTS_ID" =~ ^[0-9]+$ ]]'
+SINGLE_IDS_FAIL = ']] || { echo "the dist artifact id from emit is not all digits" >&2; exit 1; }'
+
+# Mutations the structural checks must catch (each: old, new; the first occurrence is replaced).
+STRUCTURE_MUTATIONS = {
+    "continue-on-error on the check job": ("  check:\n    needs: [plan, emit, publish]\n", "  check:\n    needs: [plan, emit, publish]\n    continue-on-error: true\n"),
+    "continue-on-error on the check URL step": (CHECK_STEP, CHECK_STEP + "        continue-on-error: true\n"),
+    "continue-on-error on the publish script step": (
+        "      - name: Validate the artifacts and create the release\n",
+        "      - name: Validate the artifacts and create the release\n        continue-on-error: true\n",
+    ),
+    "checker || true": (CHECK_LINE, '--date "$PLAN_DATE" || true\n'),
+    "checker ; true": (CHECK_LINE, '--date "$PLAN_DATE"; true\n'),
+    "set +e before the checker": ('          tar -xf "$DIST_DIR/dist.tar"', '          set +e\n          tar -xf "$DIST_DIR/dist.tar"'),
+    "checker dropped for a no-op": (
+        '          python3 "$GITHUB_WORKSPACE/tooling/scripts/verify_rustup_dist_urls.py"',
+        '          echo python3 "$GITHUB_WORKSPACE/tooling/scripts/verify_rustup_dist_urls.py"',
+    ),
+    "publish ids check made non-fatal": (PUBLISH_IDS_FAIL, "]] || true"),
+    "publish ids check replaced by an echo": (PUBLISH_IDS_TEST + " || { echo", 'echo "^[0-9]+$" || { echo'),
+    "publish ids output not the checked value": (
+        "printf 'dist_artifact_id=%s\\ncomponents_artifact_id=%s\\n' \"$DIST_ID\" \"$COMPONENTS_ID\"",
+        "printf 'dist_artifact_id=%s\\ncomponents_artifact_id=%s\\n' \"${DIST_ID%%,*}\" \"$COMPONENTS_ID\"",
+    ),
+    "check/push ids check made non-fatal": (SINGLE_IDS_FAIL, "]] || true"),
+}
+
+
+class StructureMutationTest(unittest.TestCase):
+    """Runs WorkflowStructureTest against mutated copies of the workflow: each must fail it."""
+
+    @staticmethod
+    def failing(text: str) -> set[str]:
+        """The structural tests (by id) that fail for this workflow text."""
+        module = sys.modules[__name__]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "publish-rustup-dist.yml"
+            path.write_text(text, encoding="utf-8")
+            with mock.patch.object(module, "WORKFLOW", path):
+                suite = unittest.defaultTestLoader.loadTestsFromTestCase(WorkflowStructureTest)
+                result = unittest.TextTestRunner(stream=io.StringIO(), verbosity=0).run(suite)
+        return {test.id() for test, _ in result.failures + result.errors}
+
+    def test_gating_and_id_check_mutations_are_caught(self) -> None:
+        source = WORKFLOW.read_text(encoding="utf-8")
+        baseline = self.failing(source)  # empty when the workflow is right; compared, so it cannot mask a miss
+        for label, (old, new) in STRUCTURE_MUTATIONS.items():
+            with self.subTest(mutation=label):
+                self.assertIn(old, source, "mutation anchor not found")
+                self.assertTrue(self.failing(source.replace(old, new, 1)) - baseline, f"{label} passed every structural check")
+
+
 TOOLING_DIR = os.environ.get("YURT_RUST_TOOLING_DIR", "")
 
 
@@ -604,6 +663,32 @@ class ToolingSmokeTest(unittest.TestCase):
         text = self.help_text("emit_rustup_dist.py")
         for flag in ("--release-dir", "--site", "--components", "--date", "--producer-host", "--base-url"):
             self.assertIn(flag, text)
+
+    def test_validator_renders_the_emitter_manifest_byte_for_byte(self) -> None:
+        """Golden test: the validator's vendored render_manifest must equal the emitter's write_manifest."""
+        scripts = Path(TOOLING_DIR) / "scripts"
+        sys.path.insert(0, str(scripts))  # the emitter imports its siblings
+        try:
+            spec = importlib.util.spec_from_file_location("golden_emit_rustup_dist", scripts / "emit_rustup_dist.py")
+            emitter = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(emitter)
+        finally:
+            sys.path.remove(str(scripts))
+        spec = importlib.util.spec_from_file_location("golden_rustup_dist_stage", ROOT / "tools" / "rustup_dist_stage.py")
+        stage = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(stage)
+        version, revision, date = "1.98.0", "0.0.28", "2026-10-17"
+        hosts = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+        entries = {
+            package: {
+                target: (f"{package}-{version}-{target}.tar.gz", f"{index:064x}")
+                for index, target in enumerate(hosts + (["wasm32-yurt-linux-musl"] if package == "rust-std" else []))
+            }
+            for package in ("rustc", "cargo", "rust-std")
+        }
+        base = "https://github.com/YurtOS/yurt-packages/releases/download/rustup-1.98.0-2026-10-17/"
+        expected = emitter.write_manifest(version, revision, date, entries, base)
+        self.assertEqual(stage.render_manifest(version, revision, date, entries, base), expected)
 
     def test_checker_accepts_the_flags_check_passes(self) -> None:
         text = self.help_text("verify_rustup_dist_urls.py")
