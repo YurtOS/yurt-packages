@@ -865,6 +865,17 @@ class PushPhaseTests(Harness):
         self.assertEqual({p.name: p.read_bytes() for p in self.trusted.iterdir()}, before)
         self.assertTrue((self.probe() / PUBLISHED).exists())
 
+    def test_changed_tools_on_main_before_push_are_never_run(self):
+        marker = self.root / "hijacked"
+        self.land({
+            "tools/publish_rustup_dist.sh": f"#!/usr/bin/env bash\ntouch {marker}\n",
+            "tools/rustup_dist_stage.py": f"import pathlib\npathlib.Path({str(marker)!r}).touch()\n",
+        }, "change the tools on main")
+        result = self.push()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(marker.exists())
+        self.assertTrue((self.probe() / PUBLISHED).exists())
+
     def test_push_refuses_a_rerun_attempt(self):
         for attempt in ("2", "", None):
             with self.subTest(attempt=attempt):
@@ -948,6 +959,25 @@ class PushPhaseTests(Harness):
         self.assertEqual(pushed.returncode, 0, pushed.stderr)
         self.assertEqual(pushed.calls(), [])
         self.assertEqual(self.header_pushes(), [f"|http.https://github.com/.extraheader|{AUTH_HEADER}"])
+
+
+class SiteCheckoutTests(Harness):
+    def test_a_site_dir_inside_another_checkout_is_refused_and_never_reset(self):
+        """Every phase that resets or cleans YURT_SITE_DIR refuses a directory that is not a checkout's top."""
+        inner = self.other / "sub"
+        inner.mkdir()
+        (inner / "keep").write_text("untracked\n")
+        (self.other / "README").write_text("modified, not committed\n")
+        for name, run in (("emit", self.emit), ("publish", self.publish), ("push", self.push)):
+            with self.subTest(phase=name):
+                result = run(YURT_SITE_DIR=str(inner))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("YURT_SITE_DIR", result.stderr)
+                self.assertEqual(result.calls(), [])
+                self.assertEqual((self.other / "README").read_text(), "modified, not committed\n")
+                self.assertTrue((inner / "keep").exists())
+        self.assert_no_release_mutation()
+        self.assert_nothing_pushed()
 
 
 class SequenceTests(Harness):
