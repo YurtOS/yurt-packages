@@ -62,6 +62,7 @@ DOWNLOADS = {
     "push": {"dist_artifact_id"},
 }
 MAIN_GUARD = "github.ref == 'refs/heads/main'"
+TIMEOUTS = {"plan": 10, "emit": 60, "publish": 60, "check": 30, "push": 15}
 SHA_PIN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}$")
 SCRIPT = '"$GITHUB_WORKSPACE/trusted/tools/publish_rustup_dist.sh"'
 CHECK_RUN = (
@@ -243,6 +244,11 @@ class WorkflowStructureTest(unittest.TestCase):
         for name in JOBS:
             with self.subTest(job=name):
                 self.assertEqual(self.job(name).get("if"), MAIN_GUARD)
+
+    def test_every_job_has_its_timeout(self) -> None:
+        for name in JOBS:
+            with self.subTest(job=name):
+                self.assertEqual(self.job(name).get("timeout-minutes"), TIMEOUTS[name])
 
     def test_per_job_permissions_are_exact(self) -> None:
         for name in JOBS:
@@ -558,7 +564,10 @@ EMIT_ENV = "          WORK_DIR: ${{ runner.temp }}/rustup-work\n"
 PUSH_ENV = "          PUSH_TOKEN: ${{ secrets.RUSTUP_DIST_PUBLISH_TOKEN }}\n"
 EMIT_RUN = '        run: |\n          "$GITHUB_WORKSPACE/trusted/tools/publish_rustup_dist.sh" emit\n'
 PLAN_CHECKOUT = "          path: trusted\n          persist-credentials: false\n"
-PUBLISH_SITE = "          ref: main\n          path: site\n          persist-credentials: false\n\n      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0\n        with:\n          python-version: \"3.13\"\n\n      - name: Check the artifact ids\n"
+# No pinned SHA or version comment in any anchor, so a Dependabot bump cannot break the mutation
+# tests. The first site checkout followed directly by setup-python is publish's (emit's is followed
+# by the tooling checkout).
+PUBLISH_SITE = "          ref: main\n          path: site\n          persist-credentials: false\n\n      - uses: actions/setup-python@"
 
 
 def add(anchor: str, lines: str) -> tuple[str, str]:
@@ -643,6 +652,9 @@ STRUCTURE_MUTATIONS = {
         "printf 'dist_artifact_id=%s\\ncomponents_artifact_id=%s\\n' \"${DIST_ID%%,*}\" \"$COMPONENTS_ID\"",
     ),
     "check/push ids check made non-fatal": (SINGLE_IDS_FAIL, "]] || true"),
+    "push timeout dropped": ("    runs-on: ubuntu-latest\n    timeout-minutes: 15\n", "    runs-on: ubuntu-latest\n"),
+    "check timeout raised": ("    timeout-minutes: 30\n", "    timeout-minutes: 300\n"),
+    "plan timeout dropped": ("    runs-on: ubuntu-latest\n    timeout-minutes: 10\n", "    runs-on: ubuntu-latest\n"),
 }
 
 

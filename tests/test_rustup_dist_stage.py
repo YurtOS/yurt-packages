@@ -847,14 +847,44 @@ class ParserLimitTests(Case):
                 self.raises("provenance is not valid JSON", stage.read_dist_tar, self.tar_of(dist_members(prov=(data + "\n").encode())), PLAN)
 
     def test_provenance_with_many_keys_is_parsed_in_linear_time(self):
-        many = {f"k{i}": 1 for i in range(20000)}
+        # 60k keys: the linear check takes well under a second; the old quadratic one (keys.count
+        # per key) took over 140 s here. 10 s leaves room for a slow shared runner.
+        many = {f"k{i}": 1 for i in range(60000)}
         start = time.perf_counter()
-        self.assertEqual(len(stage.parse_provenance(json.dumps(many).encode())), 20000)
-        self.assertLess(time.perf_counter() - start, 1.0)
-        duplicated = (json.dumps(many)[:-1] + ', "k19999": 2}').encode()
+        self.assertEqual(len(stage.parse_provenance(json.dumps(many).encode())), 60000)
+        self.assertLess(time.perf_counter() - start, 10.0)
+        duplicated = (json.dumps(many)[:-1] + ', "k59999": 2}').encode()
         start = time.perf_counter()
-        self.raises("duplicate keys ['k19999']", stage.parse_provenance, duplicated)
-        self.assertLess(time.perf_counter() - start, 1.0)
+        self.raises("duplicate keys ['k59999']", stage.parse_provenance, duplicated)
+        self.assertLess(time.perf_counter() - start, 10.0)
+
+    def test_provenance_overflowing_floats_are_refused(self):
+        """1e999 parses to inf without calling parse_constant; push would then crash at allow_nan=False."""
+        base = json.dumps(provenance(), indent=2, sort_keys=True)
+        top = base.replace('"date": "', '"overflow": 1e999,\n  "date": "', 1)
+        nested_value = provenance()
+        first = next(iter(nested_value["archives"]))
+        nested_value["archives"][first]["version"] = 7.5
+        nested = json.dumps(nested_value, indent=2, sort_keys=True).replace("7.5", "-1e999", 1)
+        for label, data in (("top level", top), ("nested in archives", nested)):
+            with self.subTest(where=label):
+                self.assertIn("1e999", data)
+                self.raises("provenance is not valid JSON", stage.read_dist_tar, self.tar_of(dist_members(prov=(data + "\n").encode())), PLAN)
+
+    def test_manifest_with_thousands_of_targets_is_refused_before_rendering(self):
+        """render_manifest is quadratic in hosts x guests: unknown targets must be refused first, quickly."""
+        label = f"{VERSION} (yurt {REVISION})"
+        lines = ['manifest-version = "2"', f'date = "{DATE}"', "", "[pkg.rust]", f'version = "{label}"']
+        targets = {"rustc": [f"t{i}" for i in range(2000)], "cargo": [], "rust-std": [f"g{i}" for i in range(2000)]}
+        for package in PACKAGES:
+            lines += ["", f"[pkg.{package}]", f'version = "{label}"']
+            for target in [PRODUCER, *targets[package]]:
+                lines += [f"[pkg.{package}.target.{target}]", 'url = "u"', 'hash = "h"']
+        text = "\n".join(lines) + "\n"
+        self.assertLess(len(text), stage.MAX_MEMBER_BYTES)
+        start = time.perf_counter()
+        self.raises("unknown target", stage.read_dist_tar, self.tar_of(dist_members(manifest=text)), PLAN)
+        self.assertLess(time.perf_counter() - start, 10.0)
 
 
 INJECTED = "x\n::error::injected\n::add-mask::secret"
