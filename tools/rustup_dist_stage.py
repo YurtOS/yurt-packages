@@ -25,6 +25,7 @@ import collections
 import datetime
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -204,9 +205,19 @@ def reject_constant(name: str):
     raise ValueError(f"non-standard JSON constant {name}")
 
 
+def finite_float(text: str) -> float:
+    # 1e999 parses to inf without calling parse_constant; push's allow_nan=False dump would then crash.
+    value = float(text)
+    if not math.isfinite(value):
+        raise ValueError("non-finite JSON number")
+    return value
+
+
 def parse_provenance(data: bytes) -> dict:
     try:
-        value = json.loads(data.decode("utf-8"), object_pairs_hook=reject_duplicates, parse_constant=reject_constant)
+        value = json.loads(
+            data.decode("utf-8"), object_pairs_hook=reject_duplicates, parse_constant=reject_constant, parse_float=finite_float
+        )
     except (UnicodeDecodeError, ValueError, RecursionError) as error:
         raise StageError(f"provenance is not valid JSON: {str(error)!r}") from None
     if not isinstance(value, dict):
@@ -280,6 +291,13 @@ def check_canonical_manifest(dist: dict[str, bytes], plan: Plan, manifest: dict)
     """Re-render from the parsed (filename, hash) entries and the plan; anything else in the text is refused."""
     entries: dict[str, dict[str, tuple[str, str]]] = {}
     try:
+        # render_manifest is quadratic in hosts x guests: refuse unknown targets (which also caps their
+        # number at the known set) before rendering anything.
+        for package in PACKAGES:
+            known = (*HOSTS, GUEST) if package == "rust-std" else HOSTS
+            targets = manifest["pkg"][package]["target"]
+            if len(targets) > len(known) or not set(targets) <= set(known):
+                raise StageError(f"dated manifest has an unknown target for {package}")
         for package in PACKAGES:
             entries[package] = {}
             for target, entry in manifest["pkg"][package]["target"].items():
