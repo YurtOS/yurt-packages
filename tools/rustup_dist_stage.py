@@ -186,7 +186,7 @@ def check_member_set(dist: dict[str, bytes], plan: Plan) -> None:
 def parse_manifest(dist: dict[str, bytes], plan: Plan) -> dict:
     try:
         return tomllib.loads(dist[expected_paths(plan)[2]].decode("utf-8"))
-    except (UnicodeDecodeError, tomllib.TOMLDecodeError, RecursionError) as error:
+    except (ValueError, RecursionError) as error:  # TOMLDecodeError, UnicodeDecodeError and int() digit limits are ValueErrors
         raise StageError(f"dated manifest is not valid TOML: {str(error)!r}") from None
 
 
