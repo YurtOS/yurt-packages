@@ -73,23 +73,112 @@ def as_list(value) -> list:
     return [value] if isinstance(value, str) else list(value)
 
 
+# GitHub expressions: `${{ ... }}` (may span lines), and every `if:` value, which is an expression
+# even without the braces. Context names are case-insensitive there, so the scan is too.
+EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.S)
+CONTEXT = re.compile(r"(?<![\w.$-])(secrets|github)\b", re.I)
+MEMBER = re.compile(r"\s*\.\s*([A-Za-z_][A-Za-z0-9_-]*)")
+
+
+def expressions(text: str, is_if: bool = False) -> list[str]:
+    found = EXPRESSION.findall(text)
+    if is_if and "${{" not in text:
+        found.append(text)
+    return found
+
+
+def context_refs(expression: str) -> tuple[list[str], list[str]]:
+    """The secret names an expression reads, and any reference that is not a plain `secrets.NAME`
+    (bare `secrets`, `secrets[...]`, `secrets.*`, `toJSON(secrets)`) or that reads the job token
+    (`github.token`, `github[...]`, bare `github`)."""
+    names, bad = [], []
+    for match in CONTEXT.finditer(expression):
+        word = match.group(1)
+        member = MEMBER.match(expression, match.end())
+        if member is None:
+            bad.append(f"{word} used other than as {word}.NAME")
+        elif word.lower() == "secrets":
+            names.append(member.group(1))
+        elif member.group(1).lower() == "token":
+            bad.append("github.token")
+    return names, bad
+
+
+def walk_strings(node, key=None):
+    """(key, string) for every string in a parsed YAML node; keys are strings too."""
+    if isinstance(node, dict):
+        for child_key, value in node.items():
+            if isinstance(child_key, str):
+                yield None, child_key
+            yield from walk_strings(value, child_key)
+    elif isinstance(node, list):
+        for value in node:
+            yield from walk_strings(value, key)
+    elif isinstance(node, str):
+        yield key, node
+
+
+def refs_in(node) -> tuple[list[str], list[str]]:
+    names, bad = [], []
+    for key, value in walk_strings(node):
+        for expression in expressions(value, is_if=key == "if"):
+            found, wrong = context_refs(expression)
+            names += found
+            bad += wrong
+    return names, bad
+
+
 def secrets_in(node) -> set[str]:
-    return set(re.findall(r"secrets\.([A-Za-z0-9_]+)", json.dumps(node)))
+    return set(refs_in(node)[0])
+
+
+def strip_comments(text: str) -> str:
+    return "\n".join(re.sub(r"(^|\s)#.*$", "", line) for line in text.splitlines())
 
 
 def secret_violations(text: str) -> list[str]:
-    """Every way the workflow text could hand a job a secret (or the GITHUB_TOKEN) it must not see."""
+    """Every way the workflow text could hand a job a secret (or the job token) it must not see.
+
+    Both the raw text without comments and the parsed structure are scanned: the parsed scan sees
+    through anchors, merge keys, escapes and block scalars; the raw scan sees what the parse would
+    fold away."""
+    allowed = set().union(*SECRETS.values())
+    bad = []
+    raw_names, raw_bad = [], []
+    for expression in expressions(strip_comments(text)):
+        found, wrong = context_refs(expression)
+        raw_names += found
+        raw_bad += wrong
+    bad += [f"raw: {item}" for item in raw_bad]
+    bad += [f"raw: secret {name} not allowed anywhere" for name in sorted(set(raw_names) - allowed)]
+    if raw_names.count("GITHUB_TOKEN") != 1:
+        bad.append("raw: secrets.GITHUB_TOKEN must appear exactly once")
+
     wf = yaml.safe_load(text)
     jobs = wf.get("jobs") or {}
-    bad = []
+    outside_names, outside_bad = refs_in({key: value for key, value in wf.items() if key != "jobs"})
+    if outside_names or outside_bad:
+        bad.append("a secret or token reference outside jobs")
+    parsed_names = list(outside_names)
     for name, job in jobs.items():
-        extra = secrets_in(job) - SECRETS.get(name, set())
+        names, wrong = refs_in(job)
+        parsed_names += names
+        bad += [f"{name}: {item}" for item in wrong]
+        extra = set(names) - SECRETS.get(name, set())
         if extra:
             bad.append(f"{name}: secrets {sorted(extra)} not allowed")
-    if secrets_in({key: value for key, value in wf.items() if key != "jobs"}):
-        bad.append("a secret outside jobs")
-    if "PACKAGE_PUBLISH_TOKEN" in text or "secrets[" in text:
-        bad.append("PACKAGE_PUBLISH_TOKEN or an indexed secrets reference")
+    # The job token is allowed in one place: the publish script step's GH_TOKEN.
+    if parsed_names.count("GITHUB_TOKEN") != 1:
+        bad.append("secrets.GITHUB_TOKEN must be referenced exactly once")
+    holders = [
+        step
+        for step in (jobs.get("publish") or {}).get("steps") or []
+        if (step.get("env") or {}).get("GH_TOKEN") == "${{ secrets.GITHUB_TOKEN }}" and SCRIPT in step.get("run", "")
+    ]
+    if len(holders) != 1:
+        bad.append("secrets.GITHUB_TOKEN is not the publish script step's GH_TOKEN")
+    if "PACKAGE_PUBLISH_TOKEN" in text:
+        bad.append("PACKAGE_PUBLISH_TOKEN is referenced")
     return bad
 
 
@@ -151,7 +240,7 @@ class WorkflowStructureTest(unittest.TestCase):
         self.assertEqual(secrets_in(outside), set())
         text = WORKFLOW.read_text(encoding="utf-8")
         self.assertNotIn("PACKAGE_PUBLISH_TOKEN", text)
-        self.assertNotIn("secrets[", text)
+        self.assertEqual(secret_violations(text), [])
 
     def test_secrets_are_step_scoped_never_job_env(self) -> None:
         for name in JOBS:
