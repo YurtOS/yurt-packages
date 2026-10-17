@@ -17,6 +17,8 @@ the environment for check-inputs and plan; every other command takes the plan fr
   validate-dist --dir D       D must hold exactly one regular dist.tar with valid content; if
                               DIGESTS is set and not empty, the artifact must match it
   check-dates --site S        the date rules against the checkout S
+  extract --dir D --out O     validate D as above, then write only the five files under O (empty
+                              or absent), for the check job: nothing else, no link followed
   validate-components --dist-dir D --dir C
                               validate D, then the component files in C against the manifest;
                               append digests=<compact JSON> to $OUTPUT_FILE
@@ -202,6 +204,21 @@ def pack_dist(site: Path, out: Path, plan: Plan) -> None:
     except BaseException:
         out.unlink(missing_ok=True)
         raise
+
+
+def extract_dist(directory: Path, out: Path, plan: Plan) -> None:
+    """Validate the staged dist.tar, then write only the five files under a fresh out (for check)."""
+    if os.path.islink(out) or (os.path.lexists(out) and (not os.path.isdir(out) or any(os.scandir(out)))):
+        raise StageError(f"output {str(out)!r} must be an empty directory or absent")
+    dist = read_dist_dir(directory, plan)
+    out.mkdir(exist_ok=True)
+    for name in expected_paths(plan):
+        target = out / name
+        target.parent.mkdir(parents=True, exist_ok=True)  # only dist/ and dist/<date>, created here
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+        with os.fdopen(fd, "wb") as handle:
+            os.fchmod(handle.fileno(), 0o644)
+            handle.write(dist[name])
 
 
 def read_dist_dir(directory: Path, plan: Plan) -> dict[str, bytes]:
@@ -576,6 +593,8 @@ def run(args: argparse.Namespace) -> None:
             verify_digests(expected_digests(), compute_digests(Path(args.dir) / "dist.tar", dist, None))
     elif args.command == "check-dates":
         check_date_rules(Path(args.site), plan)
+    elif args.command == "extract":
+        extract_dist(Path(args.dir), Path(args.out), plan)
     elif args.command == "validate-components":
         dist = read_dist_dir(Path(args.dist_dir), plan)
         components = check_components(Path(args.dir), dist, plan)
@@ -610,6 +629,9 @@ def main(argv: list[str] | None = None) -> int:
     validate.add_argument("--dir", required=True)
     dates = commands.add_parser("check-dates")
     dates.add_argument("--site", required=True)
+    extract = commands.add_parser("extract")
+    extract.add_argument("--dir", required=True)
+    extract.add_argument("--out", required=True)
     components = commands.add_parser("validate-components")
     components.add_argument("--dist-dir", required=True)
     components.add_argument("--dir", required=True)

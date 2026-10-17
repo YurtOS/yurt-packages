@@ -229,7 +229,8 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    permissions: {}
+    permissions:
+      contents: read  # the trusted/ checkout
     env:
       PLAN_RELEASE_TAG: ${{ needs.plan.outputs.release_tag }}
       PLAN_VERSION: ${{ needs.plan.outputs.version }}
@@ -239,6 +240,13 @@ jobs:
       PLAN_TOOLING_SHA: ${{ needs.plan.outputs.tooling_sha }}
       PLAN_TAG: ${{ needs.plan.outputs.tag }}
     steps:
+      - name: Check out the trusted scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: trusted
+          persist-credentials: false
+
       - name: Check out yurt-rust tooling at the planned SHA
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -266,13 +274,21 @@ jobs:
           artifact-ids: ${{ steps.ids.outputs.dist_artifact_id }}
           path: ${{ runner.temp }}/dist-artifact
 
+      # dist.tar comes from emit, which ran tooling code: the trusted validator checks it and writes
+      # only the five expected files, before any tooling code runs in this job.
+      - name: Extract the dist through the validator
+        env:
+          DIST_DIR: ${{ runner.temp }}/dist-artifact
+          DIST_OUT: ${{ runner.temp }}/dist-checked
+        run: |
+          python3 -I "$GITHUB_WORKSPACE/trusted/tools/rustup_dist_stage.py" extract --dir "$DIST_DIR" --out "$DIST_OUT"
+
       # Tooling code, read-only token, nothing uploaded: its only effect is its exit status.
       - name: Check every manifest URL against its sha256
         env:
-          DIST_DIR: ${{ runner.temp }}/dist-artifact
+          DIST_OUT: ${{ runner.temp }}/dist-checked
         run: |
-          tar -xf "$DIST_DIR/dist.tar" -C "$DIST_DIR"
-          python3 "$GITHUB_WORKSPACE/tooling/scripts/verify_rustup_dist_urls.py" --dist "$DIST_DIR/dist" --channel "$PLAN_VERSION" --date "$PLAN_DATE"
+          python3 "$GITHUB_WORKSPACE/tooling/scripts/verify_rustup_dist_urls.py" --dist "$DIST_OUT/dist" --channel "$PLAN_VERSION" --date "$PLAN_DATE"
 
   push:
     needs: [plan, emit, publish, check]
