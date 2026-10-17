@@ -43,7 +43,7 @@ PERMISSIONS = {
     "plan": {"contents": "read"},
     "emit": {"contents": "read"},
     "publish": {"contents": "write"},
-    "check": {},
+    "check": {"contents": "read"},  # the trusted/ checkout
     "push": {"contents": "read"},
 }
 SECRETS = {
@@ -65,9 +65,11 @@ MAIN_GUARD = "github.ref == 'refs/heads/main'"
 TIMEOUTS = {"plan": 10, "emit": 60, "publish": 60, "check": 30, "push": 15}
 SHA_PIN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}$")
 SCRIPT = '"$GITHUB_WORKSPACE/trusted/tools/publish_rustup_dist.sh"'
+STAGE_MODULE = '"$GITHUB_WORKSPACE/trusted/tools/rustup_dist_stage.py"'
+EXTRACT_RUN = f'python3 -I {STAGE_MODULE} extract --dir "$DIST_DIR" --out "$DIST_OUT"\n'
+EXTRACT_ENV = {"DIST_DIR": "${{ runner.temp }}/dist-artifact", "DIST_OUT": "${{ runner.temp }}/dist-checked"}
 CHECK_RUN = (
-    'tar -xf "$DIST_DIR/dist.tar" -C "$DIST_DIR"\n'
-    'python3 "$GITHUB_WORKSPACE/tooling/scripts/verify_rustup_dist_urls.py" --dist "$DIST_DIR/dist" '
+    'python3 "$GITHUB_WORKSPACE/tooling/scripts/verify_rustup_dist_urls.py" --dist "$DIST_OUT/dist" '
     '--channel "$PLAN_VERSION" --date "$PLAN_DATE"\n'
 )
 IDS_BOTH_RUN = (
@@ -336,7 +338,7 @@ class WorkflowStructureTest(unittest.TestCase):
             "plan": {"trusted": trusted},
             "emit": {"trusted": trusted, "site": site, "tooling": tooling},
             "publish": {"trusted": trusted, "site": site},
-            "check": {"tooling": tooling},
+            "check": {"trusted": trusted, "tooling": tooling},
             "push": {"trusted": trusted, "site": site},
         }
         for name in JOBS:
@@ -379,10 +381,19 @@ class WorkflowStructureTest(unittest.TestCase):
 
     def test_check_runs_the_tooling_checker_on_the_planned_values(self) -> None:
         # Exact: the URL check gates push only if nothing (|| true, ; true, set +e) swallows its status.
-        runs = [s for s in self.steps("check") if "verify_rustup_dist_urls.py" in s.get("run", "")]
+        steps = self.steps("check")
+        runs = [i for i, s in enumerate(steps) if "verify_rustup_dist_urls.py" in s.get("run", "")]
         self.assertEqual(len(runs), 1)
-        self.assertEqual(runs[0]["run"], CHECK_RUN)
-        self.assertEqual(runs[0].get("env"), {"DIST_DIR": "${{ runner.temp }}/dist-artifact"})
+        self.assertEqual(steps[runs[0]]["run"], CHECK_RUN)
+        self.assertEqual(steps[runs[0]].get("env"), {"DIST_OUT": EXTRACT_ENV["DIST_OUT"]})
+        # dist.tar comes from emit (tooling code): only the trusted validator extracts it, before the
+        # checker (the first tooling code of this job) runs, and into its own directory.
+        extracts = [i for i, s in enumerate(steps) if " extract " in s.get("run", "")]
+        self.assertEqual(len(extracts), 1)
+        self.assertLess(extracts[0], runs[0])
+        self.assertEqual(steps[extracts[0]]["run"], EXTRACT_RUN)
+        self.assertEqual(steps[extracts[0]].get("env"), EXTRACT_ENV)
+        self.assertEqual([s.get("run") for s in steps if "run" in s and s.get("id") != "ids"], [EXTRACT_RUN, CHECK_RUN])
 
     def test_nothing_continues_on_error(self) -> None:
         for name in JOBS:
@@ -626,6 +637,23 @@ class SecretReferenceTest(unittest.TestCase):
 
 CHECK_STEP = "      - name: Check every manifest URL against its sha256\n"
 CHECK_LINE = '--date "$PLAN_DATE"\n'
+CHECKER_LINE = '          python3 "$GITHUB_WORKSPACE/tooling/scripts/verify_rustup_dist_urls.py"'
+EXTRACT_LINE = f"          {EXTRACT_RUN}"
+EXTRACT_STEP = (
+    "      - name: Extract the dist through the validator\n"
+    "        env:\n"
+    "          DIST_DIR: ${{ runner.temp }}/dist-artifact\n"
+    "          DIST_OUT: ${{ runner.temp }}/dist-checked\n"
+    "        run: |\n" + EXTRACT_LINE + "\n"
+)
+CHECKER_STEP = (
+    "      # Tooling code, read-only token, nothing uploaded: its only effect is its exit status.\n"
+    + CHECK_STEP
+    + "        env:\n"
+    "          DIST_OUT: ${{ runner.temp }}/dist-checked\n"
+    "        run: |\n"
+    f"          {CHECK_RUN}"
+)
 PUBLISH_IDS_FAIL = ']] || { echo "an artifact id from emit is not all digits" >&2; exit 1; }'
 PUBLISH_IDS_TEST = '[[ "$DIST_ID" =~ ^[0-9]+$ && "$COMPONENTS_ID" =~ ^[0-9]+$ ]]'
 SINGLE_IDS_FAIL = ']] || { echo "the dist artifact id from emit is not all digits" >&2; exit 1; }'
@@ -640,7 +668,15 @@ STRUCTURE_MUTATIONS = {
     ),
     "checker || true": (CHECK_LINE, '--date "$PLAN_DATE" || true\n'),
     "checker ; true": (CHECK_LINE, '--date "$PLAN_DATE"; true\n'),
-    "set +e before the checker": ('          tar -xf "$DIST_DIR/dist.tar"', '          set +e\n          tar -xf "$DIST_DIR/dist.tar"'),
+    "set +e before the checker": (CHECKER_LINE, "          set +e\n" + CHECKER_LINE),
+    "checker before extract": (EXTRACT_STEP + CHECKER_STEP, CHECKER_STEP + EXTRACT_STEP),
+    "extract replaced by tar -xf": (EXTRACT_LINE, '          tar -xf "$DIST_DIR/dist.tar" -C "$DIST_OUT"\n'),
+    "extract without -I": (EXTRACT_LINE, EXTRACT_LINE.replace("python3 -I ", "python3 ")),
+    "extract into the download directory": (
+        "          DIST_OUT: ${{ runner.temp }}/dist-checked\n        run: |\n          python3 -I",
+        "          DIST_OUT: ${{ runner.temp }}/dist-artifact\n        run: |\n          python3 -I",
+    ),
+    "checker on the raw artifact": ('--dist "$DIST_OUT/dist"', '--dist "$DIST_DIR/dist"'),
     "checker dropped for a no-op": (
         '          python3 "$GITHUB_WORKSPACE/tooling/scripts/verify_rustup_dist_urls.py"',
         '          echo python3 "$GITHUB_WORKSPACE/tooling/scripts/verify_rustup_dist_urls.py"',

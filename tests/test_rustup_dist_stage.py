@@ -750,6 +750,45 @@ class CliTests(Case):
         code, _, err = self.main(["pack", "--site", str(site), "--out", str(out)], self.plan_env())
         self.assertEqual(code, 1, "an existing output is never overwritten")
 
+    def test_extract_writes_only_the_five_files(self):
+        staging, out = self.staging(), self.tmp / "extracted"
+        code, stdout, err = self.main(["extract", "--dir", str(staging), "--out", str(out)], self.plan_env())
+        self.assertEqual((code, stdout), (0, ""), err)
+        found = sorted(str(p.relative_to(out)) for p in out.rglob("*") if not p.is_dir())
+        self.assertEqual(found, sorted(FIVE))
+        for name, data in dist_members().items():
+            self.assertFalse((out / name).is_symlink())
+            self.assertEqual((out / name).read_bytes(), data)
+            self.assertEqual(stat.S_IMODE((out / name).stat().st_mode), 0o644)
+
+    def test_extract_refuses_before_writing_anything(self):
+        def hostile(_):
+            directory = self.tmp / "hostile"
+            directory.mkdir()
+            write_tar(directory / "dist.tar", [*dist_members().items(), ("dist/../../escaped", b"x")])
+            return directory
+
+        def busy(out):
+            out.mkdir()
+            (out / "stale").write_text("x")
+
+        cases = {
+            "traversal member": (hostile, None, "member path contains .."),
+            "output not empty": (lambda _: self.staging(), busy, "must be an empty directory or absent"),
+            "output is a symlink": (lambda _: self.staging(), lambda out: out.symlink_to(self.tmp), "must be an empty directory or absent"),
+        }
+        for name, (source, prepare, message) in cases.items():
+            with self.subTest(case=name):
+                subprocess.run(["rm", "-rf", str(self.tmp / "staging"), str(self.tmp / "hostile"), str(self.tmp / "extracted")], check=True)
+                out = self.tmp / "extracted"
+                if prepare:
+                    prepare(out)
+                code, _, err = self.main(["extract", "--dir", str(source(out)), "--out", str(out)], self.plan_env())
+                self.assertEqual(code, 1)
+                self.assertIn(message, err)
+                self.assertFalse((self.tmp.parent / "escaped").exists())
+                self.assertFalse(os.path.lexists(out / "dist"))
+
     def test_pack_refuses_what_the_emitter_did_not_write_as_regular_files(self):
         def link_file(site):
             (site / MOVING).unlink()

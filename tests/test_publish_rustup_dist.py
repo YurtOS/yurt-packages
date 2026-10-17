@@ -1027,11 +1027,11 @@ class SequenceTests(Harness):
     """The five jobs in order, each gated on the previous ones, as the workflow's needs lists do."""
 
     def run_check(self, dist_dir: Path, plan: dict, **env):
-        directory = self.unique("check")
-        directory.mkdir()
-        shutil.copy(dist_dir / "dist.tar", directory / "dist.tar")
-        subprocess.run(["tar", "-xf", "dist.tar"], cwd=directory, check=True)
-        command = ["python3", str(self.tooling / "scripts" / "verify_rustup_dist_urls.py"), "--dist", str(directory / "dist"),
+        """As the check job: extract through the trusted validator, then run the tooling checker."""
+        out = self.unique("checked")
+        subprocess.run(["python3", "-I", str(self.trusted / "rustup_dist_stage.py"), "extract", "--dir", str(self.staged(dist_dir)),
+                        "--out", str(out)], env=dict(self.base_env(), **plan), check=True)
+        command = ["python3", str(self.tooling / "scripts" / "verify_rustup_dist_urls.py"), "--dist", str(out / "dist"),
                    "--channel", plan["PLAN_VERSION"], "--date", plan["PLAN_DATE"]]
         return subprocess.run(command, env=dict(self.base_env(), **env), capture_output=True, text=True)
 
