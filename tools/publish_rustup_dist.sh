@@ -5,7 +5,7 @@
 # Inputs (environment only):
 #   RUST_RELEASE           yurt-rust release tag, rust-vX.Y.Z-A.B.C
 #   TOOLING_REF            yurt-rust ref holding the emitter and checker (checked out by the caller)
-#   PUBLISH_DATE           YYYY-MM-DD (default: today, UTC)
+#   PUBLISH_DATE           YYYY-MM-DD, not in the future (default: today, UTC)
 #   PRODUCER_HOST          host whose archive supplies the guest std
 #   YURT_RUST_TOOLING_DIR  checkout of yurt-rust at TOOLING_REF
 #   YURT_SITE_DIR          checkout of this repository's Pages branch (origin must be pushable)
@@ -32,6 +32,7 @@ die() { echo "publish_rustup_dist: $*" >&2; exit 1; }
 DATE="${PUBLISH_DATE:-$(date -u +%F)}"
 [[ "$DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || die "PUBLISH_DATE is not a real YYYY-MM-DD"
 python3 -I -c 'import datetime,sys; datetime.date.fromisoformat(sys.argv[1])' "$DATE" 2>/dev/null || die "PUBLISH_DATE is not a real YYYY-MM-DD"
+[[ ! "$DATE" > "$(date -u +%F)" ]] || die "PUBLISH_DATE must not be in the future"
 case "${PRODUCER_HOST:-}" in
   aarch64-apple-darwin | x86_64-unknown-linux-gnu | aarch64-unknown-linux-gnu) ;;
   *) die "PRODUCER_HOST must be one of the three supported hosts" ;;
