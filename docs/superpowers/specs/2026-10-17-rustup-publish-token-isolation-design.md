@@ -58,8 +58,8 @@ Every `needs.*.outputs` value and every input reaches a script through `env:`,
 never interpolated inside `run:`. Scripts and workflow come from `main`
 (`if: github.ref == 'refs/heads/main'`; that guard is convenience only, the
 environment restriction below is the boundary). Workflow-level
-`permissions: {}`; each job declares what it needs (`plan`, `emit` and `push`
-`contents: read`, `publish` `contents: write`, `check` `{}`). No `pull_request` trigger.
+`permissions: {}`; each job declares what it needs (`plan`, `emit`, `check` and
+`push` `contents: read`, `publish` `contents: write`). No `pull_request` trigger.
 No caches in any job that holds a write credential.
 
 | Job | Runs | Credentials |
@@ -67,7 +67,7 @@ No caches in any job that holds a write credential.
 | `plan` | trusted code only. Validates the inputs, resolves an empty date to today (UTC) **once**, derives `tag`, `version`, `revision`, `release_tag`, `date`, `producer_host`, resolves `tooling_ref` to a commit SHA (`gh api`). Outputs all of these. | `YURT_RUST_READ_TOKEN` (for the SHA lookup only) |
 | `emit` | checks out `tooling` at the planned SHA; downloads the yurt-rust release; confirms its manifest version/revision equal the plan; runs the emitter against an anonymous checkout of `dist/`; uploads two artifacts | `YURT_RUST_READ_TOKEN` |
 | `publish` | trusted scripts at `github.sha` in an isolated directory; downloads the artifacts by id into an isolated staging dir, **validates them as data**, rechecks eligibility on fresh `main`, creates the release `rustup-<ver>-<date>` and uploads the tarballs; outputs the sha256 of every validated file | job-scoped `GITHUB_TOKEN` (`contents: write`) |
-| `check` | checks out `tooling` at the **planned** SHA, runs the URL checker against the `rustup-dist` artifact and the public asset URLs; anything it uploads is never consumed | `YURT_RUST_READ_TOKEN` |
+| `check` | checks out `trusted/` at `github.sha` and `tooling` at the **planned** SHA; extracts `dist.tar` through the validator (`rustup_dist_stage.py extract`: the same member checks as `publish`, then only the five expected files are written, into their own directory) **before** any tooling code runs; then runs the URL checker against those files and the public asset URLs; anything it uploads is never consumed | `YURT_RUST_READ_TOKEN` (tooling checkout) |
 | `push` | trusted scripts in the isolated directory; downloads the small artifact by id, verifies the sha256s from `publish`, rebuilds the change on a fresh `main` checkout, commits and pushes with a bounded retry | `RUSTUP_DIST_PUBLISH_TOKEN` (environment `rustup-publish`, branch `main` only) |
 
 The trusted scripts are checked out at `github.sha` into `trusted/`, a sibling

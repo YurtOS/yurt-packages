@@ -59,15 +59,17 @@ To publish, run the manual `Publish Rustup Dist` workflow with:
 
 The workflow runs five jobs, each on a fresh VM, in the order
 `plan → emit → publish → check → push`. The phases are in
-`tools/publish_rustup_dist.sh` (`plan`, `emit`, `publish`, `push`), and the
-validation is in `tools/rustup_dist_stage.py`.
+`tools/publish_rustup_dist.sh` (`plan`, `emit`, `publish`, `push`), which does
+only tokens, `gh`, `git` and process boundaries. Every rule (inputs, plan,
+release manifest, packing, artifact validation, date rules) is in
+`tools/rustup_dist_stage.py`.
 
 | Job | What it does | Credential |
 | --- | --- | --- |
 | `plan` | validates the inputs, resolves an empty date to today (UTC) once, resolves `tooling_ref` to a commit SHA | `YURT_RUST_READ_TOKEN` |
 | `emit` | runs the yurt-rust emitter at the planned SHA and uploads two artifacts: `rustup-dist` (one `dist.tar` with the five manifest files) and `rustup-components` (the tarballs) | `YURT_RUST_READ_TOKEN` |
 | `publish` | validates both artifacts as data, rechecks eligibility on a fresh `main`, creates the release and uploads the components | the job's `GITHUB_TOKEN` (`contents: write`) |
-| `check` | runs the yurt-rust URL checker: every manifest URL must resolve to its declared sha256 | `YURT_RUST_READ_TOKEN` |
+| `check` | extracts `dist.tar` through the validator (only the five expected files), then runs the yurt-rust URL checker: every manifest URL must resolve to its declared sha256 | `YURT_RUST_READ_TOKEN` |
 | `push` | verifies the digests from `publish`, then commits the five files onto a fresh `main` and pushes | `RUSTUP_DIST_PUBLISH_TOKEN` (environment `rustup-publish`) |
 
 Code from `tooling_ref` (the emitter and the checker) runs only in `emit` and
