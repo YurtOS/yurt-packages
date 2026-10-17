@@ -37,6 +37,7 @@ HOSTS = ("aarch64-apple-darwin", "x86_64-unknown-linux-gnu", "aarch64-unknown-li
 GUEST = "wasm32-yurt-linux-musl"
 PACKAGES = ("rustc", "cargo", "rust-std")
 RELEASE_URL = "https://github.com/YurtOS/yurt-packages/releases/download"
+CANONICAL = "dated manifest is not the canonical rendering of its entries and the plan"
 MAX_TAR_BYTES = 8 << 20
 MAX_MEMBER_BYTES = 1 << 20
 MAX_TOTAL_BYTES = 4 << 20
@@ -106,7 +107,7 @@ def check_date_rules(site: Path, plan: Plan) -> None:
     if not os.path.lexists(dist):
         return
     if not stat.S_ISDIR(dist.lstat().st_mode):
-        raise StageError(f"{dist} exists but dist is not a directory")
+        raise StageError(f"{str(dist)!r} exists but dist is not a directory")
     if os.path.lexists(dist / plan.date):
         raise StageError(f"dist/{plan.date} already exists; rerun with a new date")
     # Any entry with a real date name counts, whatever its type: fail closed.
@@ -117,7 +118,7 @@ def check_date_rules(site: Path, plan: Plan) -> None:
 
 def read_dist_dir(directory: Path, plan: Plan) -> dict[str, bytes]:
     if not stat.S_ISDIR(directory.lstat().st_mode):
-        raise StageError(f"staging directory {directory} is not a directory")
+        raise StageError(f"staging directory {str(directory)!r} is not a directory")
     names = sorted(entry.name for entry in directory.iterdir())
     if names != ["dist.tar"]:
         raise StageError(f"staging directory must contain exactly dist.tar, found {names}")
@@ -167,7 +168,7 @@ def read_dist_tar(path: Path, plan: Plan) -> dict[str, bytes]:
                     raise StageError(f"member {name!r} is truncated")
                 dist[name] = data
     except tarfile.TarError as error:
-        raise StageError(f"{path.name} is not an uncompressed tar: {error}") from None
+        raise StageError(f"{path.name!r} is not an uncompressed tar: {str(error)!r}") from None
     check_content(dist, plan)
     return dist
 
@@ -185,8 +186,8 @@ def check_member_set(dist: dict[str, bytes], plan: Plan) -> None:
 def parse_manifest(dist: dict[str, bytes], plan: Plan) -> dict:
     try:
         return tomllib.loads(dist[expected_paths(plan)[2]].decode("utf-8"))
-    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-        raise StageError(f"dated manifest is not valid TOML: {error}") from None
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError, RecursionError) as error:
+        raise StageError(f"dated manifest is not valid TOML: {str(error)!r}") from None
 
 
 def reject_duplicates(pairs):
@@ -200,8 +201,8 @@ def reject_duplicates(pairs):
 def parse_provenance(data: bytes) -> dict:
     try:
         value = json.loads(data.decode("utf-8"), object_pairs_hook=reject_duplicates)
-    except (UnicodeDecodeError, ValueError) as error:
-        raise StageError(f"provenance is not valid JSON: {error}") from None
+    except (UnicodeDecodeError, ValueError, RecursionError) as error:
+        raise StageError(f"provenance is not valid JSON: {str(error)!r}") from None
     if not isinstance(value, dict):
         raise StageError("provenance is not a JSON object")
     return value
@@ -233,7 +234,8 @@ def check_content(dist: dict[str, bytes], plan: Plan) -> None:
         raise StageError(f"dated manifest has an unexpected shape: missing or malformed {error}") from None
     # The manifest carries no producer-host field; the producer must at least be one of its hosts.
     if plan.producer_host not in hosts:
-        raise StageError(f"producer host {plan.producer_host} is not a host of the manifest ({', '.join(hosts)})")
+        raise StageError(f"producer host {plan.producer_host} is not a host of the manifest {hosts!r}")
+    check_canonical_manifest(dist, plan, manifest)
 
     provenance = parse_provenance(dist[provenance_path])
     for key in sorted(PROVENANCE_KEYS):
@@ -241,14 +243,49 @@ def check_content(dist: dict[str, bytes], plan: Plan) -> None:
             raise StageError(f"provenance lacks {key}")
     unknown = sorted(set(provenance) - PROVENANCE_KEYS - OPTIONAL_PROVENANCE_KEYS)
     if unknown:
-        raise StageError(f"provenance has unexpected keys {unknown}")
+        raise StageError(f"provenance has unexpected keys {unknown!r}")
     for key, field in BOUND_KEYS.items():
         if provenance[key] != getattr(plan, field):
             raise StageError(f"provenance {key} {provenance[key]!r} does not match the plan value {getattr(plan, field)!r}")
 
 
+# Vendored copy of write_manifest in YurtOS/yurt-rust scripts/emit_rustup_dist.py. The dated manifest must
+# equal this rendering byte for byte, which closes the schema (no xz_url/zst_url, extra keys, changed
+# profiles, renames, components or extensions). Template drift: if the emitter's output format changes,
+# publish fails loudly with "not the canonical rendering" until this copy is updated to match.
 def render_manifest(version: str, revision: str, date: str, entries: dict[str, dict[str, tuple[str, str]]], base_url: str) -> str:
-    raise NotImplementedError
+    base = base_url.rstrip("/")
+    label = f"{version} (yurt {revision})"
+    hosts = list(entries["rustc"])
+    guests = [target for target in entries["rust-std"] if target not in hosts]
+    lines = ['manifest-version = "2"', f'date = "{date}"', "", "[pkg.rust]", f'version = "{label}"']
+    for host in hosts:
+        components = ", ".join(f'{{ pkg = "{package}", target = "{host}" }}' for package in PACKAGES)
+        extensions = ", ".join(f'{{ pkg = "rust-std", target = "{guest}" }}' for guest in guests)
+        lines += ["", f"[pkg.rust.target.{host}]", "available = true", f"components = [{components}]", f"extensions = [{extensions}]"]
+    for package in PACKAGES:
+        lines += ["", f"[pkg.{package}]", f'version = "{label}"']
+        for target, (filename, digest) in entries[package].items():
+            lines += ["", f"[pkg.{package}.target.{target}]", "available = true", f'url = "{base}/{filename}"', f'hash = "{digest}"']
+    return "\n".join([*lines, "", "[renames]", "", "[profiles]", *(f'{p} = ["rustc", "cargo", "rust-std"]' for p in ("minimal", "default")), ""])
+
+
+def check_canonical_manifest(dist: dict[str, bytes], plan: Plan, manifest: dict) -> None:
+    """Re-render from the parsed (filename, hash) entries and the plan; anything else in the text is refused."""
+    entries: dict[str, dict[str, tuple[str, str]]] = {}
+    try:
+        for package in PACKAGES:
+            entries[package] = {}
+            for target, entry in manifest["pkg"][package]["target"].items():
+                url, digest = entry["url"], entry["hash"]
+                if not isinstance(url, str) or not isinstance(digest, str):
+                    raise StageError(CANONICAL)
+                entries[package][target] = (url.rsplit("/", 1)[-1], digest)
+        text = render_manifest(plan.version, plan.revision, plan.date, entries, f"{RELEASE_URL}/{plan.tag}")
+    except (KeyError, TypeError, AttributeError):
+        raise StageError(CANONICAL) from None
+    if text.encode() != dist[expected_paths(plan)[2]]:
+        raise StageError(CANONICAL)
 
 
 def sha256_file(path: Path) -> str:
@@ -268,12 +305,12 @@ def check_components(directory: Path, dist: dict[str, bytes], plan: Plan) -> dic
         packages = manifest["pkg"]
         unknown = sorted(set(packages) - {"rust", *PACKAGES})
         if unknown:
-            raise StageError(f"unknown package {unknown[0]} in the manifest")
+            raise StageError(f"unknown package {unknown[0]!r} in the manifest")
         for package in PACKAGES:
             for target, entry in packages[package]["target"].items():
                 allowed = (*HOSTS, GUEST) if package == "rust-std" else HOSTS
                 if target not in allowed:
-                    raise StageError(f"unknown target {target} for {package}")
+                    raise StageError(f"unknown target {target!r} for {package}")
                 url, digest = entry["url"], entry["hash"]
                 name = f"{package}-{plan.version}-{target}.tar.gz"
                 if not isinstance(url, str) or not url.startswith(prefix):
@@ -285,27 +322,28 @@ def check_components(directory: Path, dist: dict[str, bytes], plan: Plan) -> dic
                 hashes[name] = digest
         for target in packages["rust"].get("target", {}):
             if target not in HOSTS:
-                raise StageError(f"unknown target {target} for rust")
+                raise StageError(f"unknown target {target!r} for rust")
     except (KeyError, TypeError, AttributeError) as error:
         raise StageError(f"dated manifest has an unexpected shape: missing or malformed {error}") from None
+    check_canonical_manifest(dist, plan, manifest)
 
     if not stat.S_ISDIR(directory.lstat().st_mode):
-        raise StageError(f"components directory {directory} is not a directory")
+        raise StageError(f"components directory {str(directory)!r} is not a directory")
     found: dict[str, str] = {}
     for entry in sorted(directory.iterdir()):
         if not stat.S_ISREG(entry.lstat().st_mode):
-            raise StageError(f"component {entry.name} is not a regular file")
+            raise StageError(f"component {entry.name!r} is not a regular file")
         found[entry.name] = ""
     missing = sorted(set(hashes) - set(found))
     if missing:
-        raise StageError(f"missing components: {', '.join(missing)}")
+        raise StageError(f"missing components: {missing!r}")
     extra = sorted(set(found) - set(hashes))
     if extra:
-        raise StageError(f"unexpected components: {', '.join(extra)}")
+        raise StageError(f"unexpected components: {extra!r}")
     for name in sorted(hashes):
         found[name] = sha256_file(directory / name)
         if found[name] != hashes[name]:
-            raise StageError(f"{name} does not match the manifest hash")
+            raise StageError(f"{name!r} does not match the manifest hash")
     return found
 
 
@@ -366,7 +404,7 @@ def apply_dist(site: Path, dist: dict[str, bytes], plan: Plan) -> list[str]:
             raise StageError(f"{name} exists and is not a regular file")
     dist_dir.mkdir(exist_ok=True)
     if not stat.S_ISDIR(dist_dir.lstat().st_mode):
-        raise StageError(f"{dist_dir} exists but dist is not a directory")
+        raise StageError(f"{str(dist_dir)!r} exists but dist is not a directory")
     dated.mkdir()
     os.chmod(dated, 0o755)
     for name in (*paths[2:], *paths[:2]):
@@ -434,6 +472,11 @@ def run(args: argparse.Namespace) -> None:
             print(path)
 
 
+def one_line(text: str) -> str:
+    """Escape anything non-printable, so an error can never start a new log line (workflow commands)."""
+    return "".join(char if char.isprintable() else ascii(char)[1:-1] for char in text)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="rustup_dist_stage.py", description=__doc__.split("\n")[0])
     commands = parser.add_subparsers(dest="command", required=True)
@@ -455,7 +498,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         run(args)
     except (StageError, OSError) as error:
-        print(f"rustup_dist_stage: {error}", file=sys.stderr)
+        print(f"rustup_dist_stage: {one_line(str(error))}", file=sys.stderr)
         return 1
     return 0
 
