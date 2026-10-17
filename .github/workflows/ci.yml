@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  rustup-dist-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: shellcheck
+        run: shellcheck tools/publish_rustup_dist.sh
+      - name: Publication script tests
+        run: python3 -m unittest discover -s tests -v
