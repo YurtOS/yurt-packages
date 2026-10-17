@@ -21,6 +21,7 @@ Subcommands (plan values come from PLAN_* in the environment, except for `plan` 
 """
 
 import argparse
+import collections
 import datetime
 import hashlib
 import json
@@ -191,16 +192,21 @@ def parse_manifest(dist: dict[str, bytes], plan: Plan) -> dict:
 
 
 def reject_duplicates(pairs):
-    keys = [key for key, _ in pairs]
-    duplicates = sorted({key for key in keys if keys.count(key) > 1})
+    counts = collections.Counter(key for key, _ in pairs)  # linear: a 1 MiB object must not cost minutes
+    duplicates = sorted(key for key, count in counts.items() if count > 1)
     if duplicates:
         raise ValueError(f"duplicate keys {duplicates}")
     return dict(pairs)
 
 
+def reject_constant(name: str):
+    # json.loads accepts NaN, Infinity and -Infinity; apply would publish them as non-strict JSON.
+    raise ValueError(f"non-standard JSON constant {name}")
+
+
 def parse_provenance(data: bytes) -> dict:
     try:
-        value = json.loads(data.decode("utf-8"), object_pairs_hook=reject_duplicates)
+        value = json.loads(data.decode("utf-8"), object_pairs_hook=reject_duplicates, parse_constant=reject_constant)
     except (UnicodeDecodeError, ValueError, RecursionError) as error:
         raise StageError(f"provenance is not valid JSON: {str(error)!r}") from None
     if not isinstance(value, dict):
@@ -395,7 +401,7 @@ def apply_dist(site: Path, dist: dict[str, bytes], plan: Plan) -> list[str]:
     paths = expected_paths(plan)
     provenance = parse_provenance(dist[paths[4]])
     provenance["tooling_sha"] = plan.tooling_sha
-    contents = {**dist, paths[4]: (json.dumps(provenance, indent=2, sort_keys=True) + "\n").encode()}
+    contents = {**dist, paths[4]: (json.dumps(provenance, indent=2, sort_keys=True, allow_nan=False) + "\n").encode()}
     dist_dir, dated = site / "dist", site / "dist" / plan.date
     # Check every target before writing anything: nothing is followed, nothing but these five is touched.
     for name in paths[:2]:
