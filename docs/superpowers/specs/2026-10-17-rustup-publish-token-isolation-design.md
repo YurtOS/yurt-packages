@@ -219,7 +219,9 @@ is a direct call to the tooling checker). Red first, then green:
   producer host); missing, extra or unknown-target components; tarball bytes
   not matching the manifest hash; tar members that are duplicated, absolute,
   `..`, links or oversized, fed through the real container checks. Each is
-  rejected before any release mutation or push.
+  rejected before any release mutation or push. `push` additionally has: a
+  successful fixture with **no** component directory present, and rejection
+  fixtures for a missing digest and a mismatched digest from `publish`.
 - **Between-phase races**: a same-date or newer-date publication lands after
   `publish` and before `push`; `push` fails closed. A changed script on `main`
   during `push` does not alter the running script.
