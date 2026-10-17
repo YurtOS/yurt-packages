@@ -47,7 +47,8 @@ jobs:
   plan:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    permissions: {}
+    permissions:
+      contents: read  # the trusted/ checkout; plan runs only trusted code
     outputs:
       release_tag: ${{ steps.plan.outputs.release_tag }}
       version: ${{ steps.plan.outputs.version }}

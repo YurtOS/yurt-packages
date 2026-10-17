@@ -58,7 +58,8 @@ Every `needs.*.outputs` value and every input reaches a script through `env:`,
 never interpolated inside `run:`. Scripts and workflow come from `main`
 (`if: github.ref == 'refs/heads/main'`; that guard is convenience only, the
 environment restriction below is the boundary). Workflow-level
-`permissions: {}`; each job declares what it needs. No `pull_request` trigger.
+`permissions: {}`; each job declares what it needs (`plan`, `emit` and `push`
+`contents: read`, `publish` `contents: write`, `check` `{}`). No `pull_request` trigger.
 No caches in any job that holds a write credential.
 
 | Job | Runs | Credentials |
