@@ -79,6 +79,12 @@ check_plan() {
     "dist/$PLAN_DATE/yurt-release-manifest.json")
 }
 
+# SITE gets reset and cleaned: it must be a checkout of its own, never a directory inside another repo.
+require_site_checkout() {
+  [[ -d "$SITE" && "$(git -C "$SITE" rev-parse --show-toplevel 2> /dev/null)" == "$(cd "$SITE" && pwd -P)" ]] ||
+    die "YURT_SITE_DIR is not the top directory of a git checkout"
+}
+
 reset_site() {
   git -C "$SITE" fetch --quiet origin "$PAGES_BRANCH"
   git -C "$SITE" checkout --quiet -B "$PAGES_BRANCH" "origin/$PAGES_BRANCH"
@@ -119,7 +125,7 @@ phase_emit() {
   require YURT_RUST_TOOLING_DIR YURT_SITE_DIR OUT_DIR
   local tooling="$YURT_RUST_TOOLING_DIR" out="$OUT_DIR" head
   SITE="$YURT_SITE_DIR"
-  [[ -d "$SITE" ]] || die "YURT_SITE_DIR is not a directory"
+  require_site_checkout
   head="$(git -C "$tooling" rev-parse HEAD)" || die "cannot read the commit of YURT_RUST_TOOLING_DIR"
   [[ "$head" == "$PLAN_TOOLING_SHA" ]] || die "YURT_RUST_TOOLING_DIR is not checked out at PLAN_TOOLING_SHA"
   empty_or_absent OUT_DIR "$out"
@@ -179,6 +185,7 @@ phase_publish() {
   check_plan
   require DIST_DIR COMPONENTS_DIR YURT_SITE_DIR
   SITE="$YURT_SITE_DIR"
+  require_site_checkout
   WORK="$(mktemp -d "${TMPDIR:-/tmp}/rustup-dist.XXXXXX")"
   trap 'rm -rf "$WORK"' EXIT
 
@@ -229,6 +236,7 @@ phase_push() {
   [[ -n "${DIGESTS:-}" ]] || die "DIGESTS is required: the digests output of publish"
   [[ -n "$PUSH_AUTH_TOKEN" ]] || die "PUSH_TOKEN is required"
   SITE="$YURT_SITE_DIR"
+  require_site_checkout
   WORK="$(mktemp -d "${TMPDIR:-/tmp}/rustup-dist.XXXXXX")"
   trap 'reset_site || true; rm -rf "$WORK"' EXIT
 
