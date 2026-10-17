@@ -188,9 +188,10 @@ the jobs it runs in.
   re-split release archives, about 1 GB, kept for one day). This holds after a
   failed or unintended run too. Only dispatch for a release that is meant to be
   published.
-- A missing `PUSH_TOKEN`, or a missing `rustup-publish` environment, is detected
-  only in `push`. By then `publish` has already created the release. The next
-  dispatch recreates a release that has no published manifest.
+- A missing `PUSH_TOKEN` (none in the environment and no repository secret of
+  the same name) is detected only in `push`. By then `publish` has already
+  created the release. The next dispatch recreates a release that has no
+  published manifest.
 
 Clients use `yurt-rustup-init.sh` from the `yurt-rust` repository. It reads its
 pins file `scripts/rustup-init.pins` relative to its own location, so run it

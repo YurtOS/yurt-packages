@@ -247,9 +247,8 @@ is a direct call to the tooling checker). Red first, then green:
   repository secret (the environment secret would take precedence, but the
   repository copy stays exposed). Until that setup is done, a dispatch would
   auto-create `rustup-publish` with no branch rule and `push` would read the
-  repository secret; as of 2026-10-17 the environment does not exist, the
-  secret is a repository secret and Pages is not enabled (a pre-dispatch
-  blocker, see the README checklist).
+  repository secret. Confirm the setup before the first dispatch (see the
+  README first-dispatch checklist).
 - Cross-workflow cache: tooling code can poison the `main`-scoped Actions cache
   that `publish-package.yml` restores in the job holding `PACKAGE_PUBLISH_TOKEN`
   (see Contract). Accepted for this change; a follow-up issue removes it.
