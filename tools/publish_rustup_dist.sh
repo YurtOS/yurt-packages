@@ -54,6 +54,7 @@ TOOLING_SHA="$(git -C "$TOOLING_DIR" rev-parse HEAD)"
 reset_site() {
   git -C "$SITE" fetch --quiet origin "$PAGES_BRANCH"
   git -C "$SITE" checkout --quiet -B "$PAGES_BRANCH" "origin/$PAGES_BRANCH"
+  git -C "$SITE" reset --quiet --hard "origin/$PAGES_BRANCH"
   git -C "$SITE" clean --quiet -fdx
 }
 trap 'reset_site || true; [[ -n "${WORK_DIR:-}" ]] || rm -rf "$WORK"' EXIT
