@@ -34,12 +34,25 @@ repo). Requested by the user as a redesign.
 
 ## Design
 
-Five jobs on fresh VMs, in the chain `plan → emit → publish → check → push`,
-each with `needs:` on the previous one and ordinary success gating. Scripts and
-workflow come from `main` (`if: github.ref == 'refs/heads/main'`; that guard is
-convenience only, the environment restriction below is the boundary). Workflow
-level `permissions: {}`; each job declares what it needs. No `pull_request`
-trigger. No caches in any job that holds a write credential.
+Five jobs on fresh VMs, in the order `plan → emit → publish → check → push`.
+`needs` exposes only direct dependencies, so each job lists every upstream job
+whose outputs it reads, and ordinary success gating applies:
+`emit: [plan]`, `publish: [plan, emit]`, `check: [plan, emit, publish]`,
+`push: [plan, emit, publish, check]`. Data flows by trust level:
+
+- identity (version, revision, date, tag, producer host, tooling SHA) comes
+  **only from `plan`** outputs, never relayed through `emit` or `check`;
+- artifact ids come from `emit`, which runs tooling code and so is **untrusted**:
+  they must be all digits, and artifacts are downloaded without `run-id` or
+  `github-token`, so only artifacts of the current run resolve;
+- content digests come from `publish`, which runs only trusted code.
+
+Every `needs.*.outputs` value and every input reaches a script through `env:`,
+never interpolated inside `run:`. Scripts and workflow come from `main`
+(`if: github.ref == 'refs/heads/main'`; that guard is convenience only, the
+environment restriction below is the boundary). Workflow-level
+`permissions: {}`; each job declares what it needs. No `pull_request` trigger.
+No caches in any job that holds a write credential.
 
 | Job | Runs | Credentials |
 |---|---|---|
@@ -49,40 +62,64 @@ trigger. No caches in any job that holds a write credential.
 | `check` | checks out `tooling` at the **planned** SHA, runs the URL checker against the `rustup-dist` artifact and the public asset URLs; never uploads | `YURT_RUST_READ_TOKEN` |
 | `push` | trusted scripts in the isolated directory; downloads the small artifact by id, verifies the sha256s from `publish`, rebuilds the change on a fresh `main` checkout, commits and pushes with a bounded retry | `RUSTUP_DIST_PUBLISH_TOKEN` (environment `rustup-publish`, branch `main` only) |
 
-The trusted scripts are checked out to a directory that is never the target of
-the push's checkout, rebase or reset (`$RUNNER_TEMP/trusted`), so a rebase onto
-a changed `main` cannot rewrite the script that is running.
+The trusted scripts are checked out at `github.sha` into `trusted/`, a sibling
+of `site/` under `$GITHUB_WORKSPACE` (`actions/checkout` cannot write outside
+the workspace). Only `site/` is ever fetched, reset or committed; `trusted/` is
+never touched, so a reset to a changed `main` cannot rewrite the script that is
+running.
 
 ### Artifacts (two, so `check` and `push` never fetch the ~1 GB of tarballs)
 
-- `rustup-dist`, small. Exactly these paths, nothing else:
+- `rustup-dist`, small: **one file**, `dist.tar`, an uncompressed tar of exactly
+  these five paths (these are what `scripts/emit_rustup_dist.py` writes on
+  success; it deletes nothing):
   `dist/channel-rust-<ver>.toml`, `dist/channel-rust-<ver>.toml.sha256`,
   `dist/<date>/channel-rust-<ver>.toml`, `dist/<date>/channel-rust-<ver>.toml.sha256`,
   `dist/<date>/yurt-release-manifest.json`.
+  Shipping a tar means the entries are inspected by our own code **before
+  anything is extracted** (see Validation); the artifact zip layer must yield
+  exactly that one regular file.
 - `rustup-components`, large, compression level 0 (the tarballs are already
-  compressed). Only files named `<rustc|cargo|rust-std>-<ver>-<target>.tar.gz`
-  for the planned version. The emitter writes no component sidecars.
+  compressed). The emitter writes `rustc`, `cargo` and `rust-std` tarballs for
+  each host of the release plus `rust-std-<ver>-wasm32-yurt-linux-musl` for the
+  producer host, and no component sidecars. Their content is bound to the
+  manifest by hash (Validation), not trusted by name.
 
-No `meta.json`: every identity value (version, revision, date, tag, producer
-host, tooling SHA) comes from `plan` outputs, never from the artifact.
+No `meta.json`: every identity value comes from `plan` outputs. A job named
+`check` may upload nothing the pipeline consumes; its uploads, if any, are
+never read.
 
 ### Validation (one shared function, used by `publish` and `push`)
 
-The artifact is extracted into an empty staging directory outside every trusted
-checkout; `download-artifact` is pinned by commit SHA and addressed by artifact
-id (an output of `emit`). Then:
+`download-artifact` is pinned by commit SHA and addressed by artifact id into
+an empty staging directory outside `trusted/` and `site/`. Two layers:
 
-- each expected path exists as a **regular file** (`lstat`, not through links),
-  within a size cap, and no other path exists anywhere in the tree (links,
-  devices, directories beyond the expected ones, duplicate normalized or
-  absolute paths, are all rejected);
-- component names match the planned version exactly; tarballs are never
-  unpacked in a privileged job;
-- the moving manifest and its sidecar are byte-identical to the dated copies;
-- the dated manifest's channel version equals the planned version; the sidecars
-  match the manifests;
-- the provenance JSON parses with `python3 -I`; the trusted script sets its
-  `tooling_sha` from the `plan` output (the emitter's value is overwritten);
+1. **Container.** The staging directory must contain exactly the expected
+   top-level regular file(s) (`dist.tar`; the named component files) and
+   nothing else (`lstat`, no links, devices or directories). `dist.tar` is read
+   with Python's `tarfile` **without extracting**: every member name, type,
+   count and size is checked first (exactly the five expected paths, regular
+   files, no duplicates, no absolute or `..` paths, a size cap per member and in
+   total); only then are those members extracted, one by one, with containment
+   checks. A zip layer that collapses duplicate component names is harmless:
+   the final tree is validated and every component is bound by hash below.
+2. **Content, bound to the plan** (all identity comes from `plan`, nothing is
+   trusted because the artifact says so):
+   - the moving manifest and its sidecar are byte-identical to the dated copies;
+     the sidecars match the manifests;
+   - the dated manifest is parsed with `tomllib` under `python3 -I`: its date
+     and channel version equal the plan; the set of component files in
+     `rustup-components` is **exactly** the basenames of the manifest's URLs,
+     the URLs sit under the planned release tag's download prefix, the targets
+     are known, and each tarball's sha256 equals the manifest's hash (missing,
+     extra or unknown components, or swapped bytes, are rejected). Tarballs are
+     never unpacked in a privileged job;
+   - the provenance JSON parses with `python3 -I`, and its identity fields
+     (release tag, rust version, revision, date, producer host) equal the plan
+     values (the exact key set is pinned by the emitter, see the plan);
+     `publish` outputs the sha256 of every file **as downloaded**; `push`
+     verifies those, then rewrites `tooling_sha` from the `plan` output
+     deterministically before staging (the emitter's value is overwritten);
 - date rules, enforced by trusted code, not left to the emitter: `dist/<date>/`
   does not exist on fresh `main`, and `<date>` is strictly later than the newest
   existing dated directory (any version); the date is a real calendar date,
@@ -94,8 +131,8 @@ copies in exactly the validated five files (mode 100644, nothing followed),
 asserts the staged change is exactly those paths, commits and pushes; on a
 rejected push it repeats (bounded, three attempts). A newer publication that
 lands between phases therefore fails closed instead of being merged over.
-After `publish`, `push` also verifies the sha256 of each file against the
-digests `publish` validated, so nothing between the two jobs can swap content.
+`push` verifies the digests `publish` output before it stages anything, so
+nothing between the two jobs can swap content.
 
 ### Failure and rerun policy
 
@@ -156,15 +193,21 @@ is a direct call to the tooling checker). Red first, then green:
   in `push`, the read token never in `publish`/`push`); `push` declares
   environment `rustup-publish`; per-job `permissions` minimal; no
   `pull_request` trigger; `persist-credentials: false` on every checkout; the
-  trusted scripts directory is distinct from the site checkout; `download-artifact`
-  and other actions pinned; no cache step in `publish`/`push`.
+  `trusted/` and `site/` are distinct checkout paths under the workspace;
+  `download-artifact` and other actions pinned, with no `run-id`/`github-token`;
+  no cache step in `publish`/`push`; the exact `needs` lists above; every
+  `needs.*.outputs`/input reference sits in an `env:` block, never inside `run:`.
 - **Phase harness**: the phases run in separate temp dirs and processes. All 17
   existing behaviours are carried over (adapted per phase; list in the plan).
 - **Hostile-artifact fixtures** for `validate`: path traversal, absolute and
   duplicate normalized paths, symlinks and special files, extra files, wrong
   component names or version, mismatched moving/dated manifests, an existing
-  `dist/<date>`, an older-than-newest date, provenance not JSON. Each is rejected
-  before any release mutation or push.
+  `dist/<date>`, an older-than-newest date, provenance not JSON; valid
+  JSON/TOML carrying the **wrong identity** (tag, version, revision, date,
+  producer host); missing, extra or unknown-target components; tarball bytes
+  not matching the manifest hash; tar members that are duplicated, absolute,
+  `..`, links or oversized, fed through the real container checks. Each is
+  rejected before any release mutation or push.
 - **Between-phase races**: a same-date or newer-date publication lands after
   `publish` and before `push`; `push` fails closed. A changed script on `main`
   during `push` does not alter the running script.
@@ -176,7 +219,15 @@ is a direct call to the tooling checker). Red first, then green:
 
 - Unrun end to end, like #12; tested with shims and a local bare remote.
 - Org may need to approve the two PATs; the user must create the
-  `rustup-publish` environment and move `RUSTUP_DIST_PUBLISH_TOKEN` into it.
+  `rustup-publish` environment (deployment branches: `main` only, no tag
+  rules), move `RUSTUP_DIST_PUBLISH_TOKEN` into it, and delete the repo-level
+  secret of the same name so the environment one is not shadowed.
+- First-dispatch checklist: an org policy can cap `GITHUB_TOKEN` to read, which
+  would make `publish` fail (job-level `contents: write` cannot exceed it);
+  `YURT_RUST_READ_TOKEN` stays readable from any branch (accepted: it is
+  read-only on a repo whose tooling the dispatcher already chooses);
+  `publish` holds a short-lived write `GITHUB_TOKEN` but runs only trusted code;
+  `plan` validates the SHA it resolves as 40-hex.
 - `check` runs tooling code with the read-only token: acceptable, it can only
   read the repo the tooling came from.
 - Transfer: the ~1 GB components move once, from `emit` to `publish`; storage
