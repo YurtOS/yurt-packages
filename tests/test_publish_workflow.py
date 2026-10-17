@@ -1,0 +1,782 @@
+"""Static checks of .github/workflows/publish-rustup-dist.yml (the five-job publisher).
+
+The workflow is parsed with PyYAML. A missing PyYAML is a failure, not a skip: CI installs
+pyyaml==6.0.2. PyYAML reads the `on:` key as the boolean True (YAML 1.1), so triggers are
+looked up under True.
+
+These checks cover what can be proven without a hosted run: the job chain, which job sees
+which secret, permissions, checkout and artifact wiring, and that no expression reaches a
+shell through `run:`. What only a hosted run proves is listed in the README.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import io
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest import mock
+from pathlib import Path
+
+try:
+    import yaml
+except ImportError as error:  # fail loudly: the static checks must never be skipped
+    raise ImportError("PyYAML is required for the workflow tests: pip install pyyaml==6.0.2") from error
+
+ROOT = Path(__file__).resolve().parent.parent
+WORKFLOW = ROOT / ".github" / "workflows" / "publish-rustup-dist.yml"
+
+JOBS = ["plan", "emit", "publish", "check", "push"]
+NEEDS = {
+    "plan": [],
+    "emit": ["plan"],
+    "publish": ["plan", "emit"],
+    "check": ["plan", "emit", "publish"],
+    "push": ["plan", "emit", "publish", "check"],
+}
+PERMISSIONS = {
+    "plan": {"contents": "read"},
+    "emit": {"contents": "read"},
+    "publish": {"contents": "write"},
+    "check": {"contents": "read"},  # the trusted/ checkout
+    "push": {"contents": "read"},
+}
+SECRETS = {
+    "plan": {"YURT_RUST_READ_TOKEN"},
+    "emit": {"YURT_RUST_READ_TOKEN"},
+    "publish": {"GITHUB_TOKEN"},
+    "check": {"YURT_RUST_READ_TOKEN"},
+    "push": {"RUSTUP_DIST_PUBLISH_TOKEN"},
+}
+PLAN_OUTPUTS = {"release_tag", "version", "revision", "date", "producer_host", "tooling_sha", "tag"}
+EMIT_OUTPUTS = {"dist_artifact_id", "components_artifact_id"}
+# Which downloads each job makes: emit output -> artifact.
+DOWNLOADS = {
+    "publish": {"dist_artifact_id", "components_artifact_id"},
+    "check": {"dist_artifact_id"},
+    "push": {"dist_artifact_id"},
+}
+MAIN_GUARD = "github.ref == 'refs/heads/main'"
+TIMEOUTS = {"plan": 10, "emit": 60, "publish": 60, "check": 30, "push": 15}
+SHA_PIN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}$")
+SCRIPT = '"$GITHUB_WORKSPACE/trusted/tools/publish_rustup_dist.sh"'
+STAGE_MODULE = '"$GITHUB_WORKSPACE/trusted/tools/rustup_dist_stage.py"'
+EXTRACT_RUN = f'python3 -I {STAGE_MODULE} extract --dir "$DIST_DIR" --out "$DIST_OUT"\n'
+EXTRACT_ENV = {"DIST_DIR": "${{ runner.temp }}/dist-artifact", "DIST_OUT": "${{ runner.temp }}/dist-checked"}
+CHECK_RUN = (
+    'python3 "$GITHUB_WORKSPACE/tooling/scripts/verify_rustup_dist_urls.py" --dist "$DIST_OUT/dist" '
+    '--channel "$PLAN_VERSION" --date "$PLAN_DATE"\n'
+)
+IDS_BOTH_RUN = (
+    '[[ "$DIST_ID" =~ ^[0-9]+$ && "$COMPONENTS_ID" =~ ^[0-9]+$ ]] || '
+    '{ echo "an artifact id from emit is not all digits" >&2; exit 1; }\n'
+    "printf 'dist_artifact_id=%s\\ncomponents_artifact_id=%s\\n' \"$DIST_ID\" \"$COMPONENTS_ID\" >> \"$GITHUB_OUTPUT\"\n"
+)
+IDS_DIST_RUN = (
+    '[[ "$DIST_ID" =~ ^[0-9]+$ ]] || { echo "the dist artifact id from emit is not all digits" >&2; exit 1; }\n'
+    "printf 'dist_artifact_id=%s\\n' \"$DIST_ID\" >> \"$GITHUB_OUTPUT\"\n"
+)
+
+
+def load() -> dict:
+    with WORKFLOW.open(encoding="utf-8") as handle:
+        return yaml.safe_load(handle)
+
+
+def as_list(value) -> list:
+    if value is None:
+        return []
+    return [value] if isinstance(value, str) else list(value)
+
+
+# GitHub expressions: `${{ ... }}` (may span lines), and every `if:` value, which is an expression
+# even without the braces. Context names are case-insensitive there, so the scan is too.
+EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.S)
+CONTEXT = re.compile(r"(?<![\w.$-])(secrets|github)\b", re.I)
+MEMBER = re.compile(r"\s*\.\s*([A-Za-z_][A-Za-z0-9_-]*)")
+
+
+def expressions(text: str, is_if: bool = False) -> list[str]:
+    found = EXPRESSION.findall(text)
+    if is_if and "${{" not in text:
+        found.append(text)
+    return found
+
+
+def context_refs(expression: str) -> tuple[list[str], list[str]]:
+    """The secret names an expression reads, and any reference that is not a plain `secrets.NAME`
+    (bare `secrets`, `secrets[...]`, `secrets.*`, `toJSON(secrets)`) or that reads the job token
+    (`github.token`, `github[...]`, bare `github`)."""
+    names, bad = [], []
+    for match in CONTEXT.finditer(expression):
+        word = match.group(1)
+        member = MEMBER.match(expression, match.end())
+        if member is None:
+            bad.append(f"{word} used other than as {word}.NAME")
+        elif word.lower() == "secrets":
+            names.append(member.group(1))
+        elif member.group(1).lower() == "token":
+            bad.append("github.token")
+    return names, bad
+
+
+def walk_strings(node, key=None):
+    """(key, string) for every string in a parsed YAML node; keys are strings too."""
+    if isinstance(node, dict):
+        for child_key, value in node.items():
+            if isinstance(child_key, str):
+                yield None, child_key
+            yield from walk_strings(value, child_key)
+    elif isinstance(node, list):
+        for value in node:
+            yield from walk_strings(value, key)
+    elif isinstance(node, str):
+        yield key, node
+
+
+def refs_in(node) -> tuple[list[str], list[str]]:
+    names, bad = [], []
+    for key, value in walk_strings(node):
+        for expression in expressions(value, is_if=key == "if"):
+            found, wrong = context_refs(expression)
+            names += found
+            bad += wrong
+    return names, bad
+
+
+def secrets_in(node) -> set[str]:
+    return set(refs_in(node)[0])
+
+
+def strip_comments(text: str) -> str:
+    return "\n".join(re.sub(r"(^|\s)#.*$", "", line) for line in text.splitlines())
+
+
+def secret_violations(text: str) -> list[str]:
+    """Every way the workflow text could hand a job a secret (or the job token) it must not see.
+
+    Both the raw text without comments and the parsed structure are scanned: the parsed scan sees
+    through anchors, merge keys, escapes and block scalars; the raw scan sees what the parse would
+    fold away."""
+    allowed = set().union(*SECRETS.values())
+    bad = []
+    raw_names, raw_bad = [], []
+    for expression in expressions(strip_comments(text)):
+        found, wrong = context_refs(expression)
+        raw_names += found
+        raw_bad += wrong
+    bad += [f"raw: {item}" for item in raw_bad]
+    bad += [f"raw: secret {name} not allowed anywhere" for name in sorted(set(raw_names) - allowed)]
+    if raw_names.count("GITHUB_TOKEN") != 1:
+        bad.append("raw: secrets.GITHUB_TOKEN must appear exactly once")
+
+    wf = yaml.safe_load(text)
+    jobs = wf.get("jobs") or {}
+    outside_names, outside_bad = refs_in({key: value for key, value in wf.items() if key != "jobs"})
+    if outside_names or outside_bad:
+        bad.append("a secret or token reference outside jobs")
+    parsed_names = list(outside_names)
+    for name, job in jobs.items():
+        names, wrong = refs_in(job)
+        parsed_names += names
+        bad += [f"{name}: {item}" for item in wrong]
+        extra = set(names) - SECRETS.get(name, set())
+        if extra:
+            bad.append(f"{name}: secrets {sorted(extra)} not allowed")
+    # The job token is allowed in one place: the publish script step's GH_TOKEN.
+    if parsed_names.count("GITHUB_TOKEN") != 1:
+        bad.append("secrets.GITHUB_TOKEN must be referenced exactly once")
+    holders = [
+        step
+        for step in (jobs.get("publish") or {}).get("steps") or []
+        if (step.get("env") or {}).get("GH_TOKEN") == "${{ secrets.GITHUB_TOKEN }}" and SCRIPT in step.get("run", "")
+    ]
+    if len(holders) != 1:
+        bad.append("secrets.GITHUB_TOKEN is not the publish script step's GH_TOKEN")
+    if "PACKAGE_PUBLISH_TOKEN" in text:
+        bad.append("PACKAGE_PUBLISH_TOKEN is referenced")
+    return bad
+
+
+def uses_name(step: dict) -> str:
+    return step.get("uses", "").split("@", 1)[0]
+
+
+class WorkflowStructureTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.wf = load()
+        self.jobs = self.wf.get("jobs") or {}
+
+    def job(self, name: str) -> dict:
+        self.assertIn(name, self.jobs, f"job {name} is missing")
+        return self.jobs[name]
+
+    def steps(self, name: str) -> list[dict]:
+        return self.job(name).get("steps") or []
+
+    def all_steps(self):
+        for name, job in self.jobs.items():
+            for step in job.get("steps") or []:
+                yield name, step
+
+    def test_on_key_is_parsed_as_true_and_only_dispatch_triggers(self) -> None:
+        self.assertNotIn("on", self.wf)
+        self.assertIn(True, self.wf)
+        self.assertEqual(set(self.wf[True]), {"workflow_dispatch"})
+
+    def test_workflow_permissions_are_empty(self) -> None:
+        self.assertEqual(self.wf.get("permissions"), {})
+
+    def test_concurrency_group_is_shared_with_publish_package(self) -> None:
+        # publish's release delete is safe only because this group serializes whole runs.
+        self.assertEqual(self.wf.get("concurrency"), {"group": "publish-package", "cancel-in-progress": False})
+
+    def test_exactly_the_five_jobs_with_the_exact_needs(self) -> None:
+        self.assertEqual(sorted(self.jobs), sorted(JOBS))
+        for name in JOBS:
+            with self.subTest(job=name):
+                self.assertEqual(as_list(self.job(name).get("needs")), NEEDS[name])
+
+    def test_every_job_runs_only_on_main(self) -> None:
+        for name in JOBS:
+            with self.subTest(job=name):
+                self.assertEqual(self.job(name).get("if"), MAIN_GUARD)
+
+    def test_every_job_has_its_timeout(self) -> None:
+        for name in JOBS:
+            with self.subTest(job=name):
+                self.assertEqual(self.job(name).get("timeout-minutes"), TIMEOUTS[name])
+
+    def test_per_job_permissions_are_exact(self) -> None:
+        for name in JOBS:
+            with self.subTest(job=name):
+                self.assertIn("permissions", self.job(name))
+                self.assertEqual(self.job(name)["permissions"], PERMISSIONS[name])
+
+    def test_secrets_per_job_are_exact(self) -> None:
+        for name in JOBS:
+            with self.subTest(job=name):
+                self.assertEqual(secrets_in(self.job(name)), SECRETS[name])
+        outside = {key: value for key, value in self.wf.items() if key != "jobs"}
+        self.assertEqual(secrets_in(outside), set())
+        text = WORKFLOW.read_text(encoding="utf-8")
+        self.assertNotIn("PACKAGE_PUBLISH_TOKEN", text)
+        self.assertEqual(secret_violations(text), [])
+
+    def test_secrets_are_step_scoped_never_job_env(self) -> None:
+        for name in JOBS:
+            with self.subTest(job=name):
+                self.assertEqual(secrets_in(self.job(name).get("env") or {}), set())
+
+    def test_push_token_reaches_only_the_push_script_step(self) -> None:
+        holders = [
+            (name, step) for name, step in self.all_steps() if "RUSTUP_DIST_PUBLISH_TOKEN" in secrets_in(step)
+        ]
+        self.assertEqual(len(holders), 1)
+        name, step = holders[0]
+        self.assertEqual(name, "push")
+        self.assertEqual(step.get("env", {}).get("PUSH_TOKEN"), "${{ secrets.RUSTUP_DIST_PUBLISH_TOKEN }}")
+        self.assertEqual(secrets_in({k: v for k, v in step.items() if k != "env"}), set())
+        self.assertEqual(step["run"].split(), [SCRIPT, "push"])
+
+    def test_push_alone_uses_the_rustup_publish_environment(self) -> None:
+        for name in JOBS:
+            with self.subTest(job=name):
+                environment = self.job(name).get("environment")
+                if isinstance(environment, dict):
+                    environment = environment.get("name")
+                self.assertEqual(environment, "rustup-publish" if name == "push" else None)
+                if name != "push":
+                    self.assertNotIn("rustup-publish", json.dumps(self.job(name)))
+
+    def test_every_action_is_pinned_by_sha_with_the_tag_in_a_comment(self) -> None:
+        steps = list(self.all_steps())
+        self.assertTrue(steps)
+        for name, step in steps:
+            if "uses" in step:
+                with self.subTest(job=name, uses=step["uses"]):
+                    self.assertRegex(step["uses"], SHA_PIN)
+        for line in WORKFLOW.read_text(encoding="utf-8").splitlines():
+            if re.match(r"^\s*(-\s+)?uses:", line):
+                with self.subTest(line=line.strip()):
+                    self.assertRegex(line, r"uses: \S+@[0-9a-f]{40} # v\d+(\.\d+)*$")
+
+    def test_every_checkout_persists_no_credentials(self) -> None:
+        checkouts = [(n, s) for n, s in self.all_steps() if uses_name(s) == "actions/checkout"]
+        self.assertTrue(checkouts)
+        for name, step in checkouts:
+            with self.subTest(job=name, path=step.get("with", {}).get("path")):
+                self.assertIs(step.get("with", {}).get("persist-credentials"), False)
+
+    def checkouts(self, name: str) -> dict[str, dict]:
+        found: dict[str, dict] = {}
+        for step in self.steps(name):
+            if uses_name(step) == "actions/checkout":
+                options = step.get("with") or {}
+                path = options.get("path")
+                self.assertIsNotNone(path, f"{name}: a checkout without a path")
+                self.assertNotIn(path, found, f"{name}: two checkouts into {path}")
+                found[path] = options
+        return found
+
+    def test_checkout_layout_per_job(self) -> None:
+        trusted = {"ref": "${{ github.sha }}", "path": "trusted", "persist-credentials": False}
+        site = {"ref": "main", "path": "site", "persist-credentials": False}
+        tooling = {
+            "repository": "YurtOS/yurt-rust",
+            "ref": "${{ needs.plan.outputs.tooling_sha }}",
+            "path": "tooling",
+            "token": "${{ secrets.YURT_RUST_READ_TOKEN }}",
+            "persist-credentials": False,
+        }
+        expected = {
+            "plan": {"trusted": trusted},
+            "emit": {"trusted": trusted, "site": site, "tooling": tooling},
+            "publish": {"trusted": trusted, "site": site},
+            "check": {"trusted": trusted, "tooling": tooling},
+            "push": {"trusted": trusted, "site": site},
+        }
+        for name in JOBS:
+            with self.subTest(job=name):
+                self.assertEqual(self.checkouts(name), expected[name])
+
+    def test_checkout_paths_are_plain_names_under_the_workspace(self) -> None:
+        # trusted/ and site/ (and tooling/) are siblings: no nesting, no absolute or .. paths.
+        for name, step in self.all_steps():
+            if uses_name(step) == "actions/checkout":
+                path = step["with"]["path"]
+                with self.subTest(job=name, path=path):
+                    self.assertRegex(path, r"^[a-z]+$")  # a plain name under the workspace
+
+    def test_no_expression_inside_any_run(self) -> None:
+        runs = [(n, s) for n, s in self.all_steps() if "run" in s]
+        self.assertTrue(runs)
+        for name, step in runs:
+            with self.subTest(job=name, step=step.get("name")):
+                self.assertNotIn("${{", step["run"])
+
+    def test_no_script_runs_from_the_site_or_tooling_checkout_in_privileged_jobs(self) -> None:
+        for name, step in self.all_steps():
+            if "run" in step:
+                with self.subTest(job=name, step=step.get("name")):
+                    self.assertNotIn("site/tools", step["run"])
+        for name in ("publish", "push"):
+            for step in self.steps(name):
+                if "run" in step:
+                    with self.subTest(job=name, step=step.get("name")):
+                        self.assertNotIn("tooling", step["run"])
+
+    def test_phases_run_the_trusted_script(self) -> None:
+        for name in ("plan", "emit", "publish", "push"):
+            with self.subTest(job=name):
+                runs = [s["run"] for s in self.steps(name) if SCRIPT in s.get("run", "")]
+                self.assertEqual(len(runs), 1)
+                self.assertEqual(runs[0].split()[-1], name)
+        self.assertFalse([s for s in self.steps("check") if SCRIPT in s.get("run", "")])
+
+    def test_check_runs_the_tooling_checker_on_the_planned_values(self) -> None:
+        # Exact: the URL check gates push only if nothing (|| true, ; true, set +e) swallows its status.
+        steps = self.steps("check")
+        runs = [i for i, s in enumerate(steps) if "verify_rustup_dist_urls.py" in s.get("run", "")]
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(steps[runs[0]]["run"], CHECK_RUN)
+        self.assertEqual(steps[runs[0]].get("env"), {"DIST_OUT": EXTRACT_ENV["DIST_OUT"]})
+        # dist.tar comes from emit (tooling code): only the trusted validator extracts it, before the
+        # checker (the first tooling code of this job) runs, and into its own directory.
+        extracts = [i for i, s in enumerate(steps) if " extract " in s.get("run", "")]
+        self.assertEqual(len(extracts), 1)
+        self.assertLess(extracts[0], runs[0])
+        self.assertEqual(steps[extracts[0]]["run"], EXTRACT_RUN)
+        self.assertEqual(steps[extracts[0]].get("env"), EXTRACT_ENV)
+        self.assertEqual([s.get("run") for s in steps if "run" in s and s.get("id") != "ids"], [EXTRACT_RUN, CHECK_RUN])
+
+    def test_nothing_continues_on_error(self) -> None:
+        for name in JOBS:
+            with self.subTest(job=name):
+                self.assertNotIn("continue-on-error", self.job(name))
+                for step in self.steps(name):
+                    self.assertNotIn("continue-on-error", step)
+
+    def test_artifact_id_checks_are_exact(self) -> None:
+        expected = {
+            "publish": (IDS_BOTH_RUN, {"DIST_ID": "${{ needs.emit.outputs.dist_artifact_id }}",
+                                       "COMPONENTS_ID": "${{ needs.emit.outputs.components_artifact_id }}"}),
+            "check": (IDS_DIST_RUN, {"DIST_ID": "${{ needs.emit.outputs.dist_artifact_id }}"}),
+            "push": (IDS_DIST_RUN, {"DIST_ID": "${{ needs.emit.outputs.dist_artifact_id }}"}),
+        }
+        for name, (run, env) in expected.items():
+            with self.subTest(job=name):
+                checks = [s for s in self.steps(name) if s.get("id") == "ids"]
+                self.assertEqual(len(checks), 1)
+                self.assertEqual(checks[0].get("run"), run)
+                self.assertEqual(checks[0].get("env"), env)
+
+    def test_no_cache_in_privileged_jobs(self) -> None:
+        for name in ("publish", "push"):
+            for step in self.steps(name):
+                with self.subTest(job=name, step=step.get("name") or step.get("uses")):
+                    self.assertNotIn("cache", uses_name(step))
+                    self.assertNotIn("cache", step.get("with") or {})
+
+    def test_job_outputs(self) -> None:
+        plan = self.job("plan").get("outputs") or {}
+        self.assertEqual(set(plan), PLAN_OUTPUTS)
+        for key, value in plan.items():
+            self.assertEqual(value, f"${{{{ steps.plan.outputs.{key} }}}}")
+        self.assertEqual(set(self.job("emit").get("outputs") or {}), EMIT_OUTPUTS)
+        self.assertEqual(self.job("publish").get("outputs"), {"digests": "${{ steps.publish.outputs.digests }}"})
+        self.assertFalse(self.job("check").get("outputs"))
+        self.assertFalse(self.job("push").get("outputs"))
+
+    def test_identity_comes_only_from_plan_and_data_by_trust_level(self) -> None:
+        text = json.dumps(self.jobs)
+        refs = set(re.findall(r"needs\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+)", text))
+        self.assertTrue(refs)
+        for job, key in refs:
+            with self.subTest(ref=f"{job}.{key}"):
+                allowed = {"plan": PLAN_OUTPUTS, "emit": EMIT_OUTPUTS, "publish": {"digests"}}.get(job, set())
+                self.assertIn(key, allowed)
+        self.assertNotIn("needs.publish", json.dumps(self.job("check")))
+        self.assertIn("needs.publish.outputs.digests", json.dumps(self.job("push")))
+        for name in ("emit", "publish", "check", "push"):
+            env = self.job(name).get("env") or {}
+            with self.subTest(job=name):
+                for key in PLAN_OUTPUTS:
+                    self.assertEqual(env.get(f"PLAN_{key.upper()}"), f"${{{{ needs.plan.outputs.{key} }}}}")
+
+    def test_uploads(self) -> None:
+        uploads = {
+            s["with"]["name"]: s
+            for s in self.steps("emit")
+            if uses_name(s) == "actions/upload-artifact" and "with" in s
+        }
+        self.assertEqual(set(uploads), {"rustup-dist", "rustup-components"})
+        for name, step in uploads.items():
+            with self.subTest(artifact=name):
+                options = step["with"]
+                self.assertEqual(options.get("retention-days"), 1)
+                self.assertEqual(options.get("if-no-files-found"), "error")
+                self.assertTrue(options["path"].startswith("${{ runner.temp }}/"))
+        self.assertEqual(uploads["rustup-dist"]["with"]["path"], "${{ runner.temp }}/rustup-out/dist/dist.tar")
+        self.assertEqual(uploads["rustup-components"]["with"]["path"], "${{ runner.temp }}/rustup-out/components/")
+        self.assertEqual(uploads["rustup-components"]["with"].get("compression-level"), 0)
+        outputs = self.job("emit").get("outputs") or {}
+        self.assertEqual(
+            outputs.get("dist_artifact_id"), f"${{{{ steps.{uploads['rustup-dist'].get('id')}.outputs.artifact-id }}}}"
+        )
+        self.assertEqual(
+            outputs.get("components_artifact_id"),
+            f"${{{{ steps.{uploads['rustup-components'].get('id')}.outputs.artifact-id }}}}",
+        )
+        for name in ("plan", "publish", "check", "push"):
+            with self.subTest(job=name):
+                self.assertFalse([s for s in self.steps(name) if uses_name(s) == "actions/upload-artifact"])
+
+    def test_downloads_by_validated_id_into_their_own_directories(self) -> None:
+        for name in JOBS:
+            steps = self.steps(name)
+            downloads = [i for i, s in enumerate(steps) if uses_name(s) == "actions/download-artifact"]
+            with self.subTest(job=name):
+                self.assertEqual(len(downloads), len(DOWNLOADS.get(name, ())))
+            seen_ids, seen_paths = set(), set()
+            for index in downloads:
+                options = steps[index].get("with") or {}
+                with self.subTest(job=name, step=index):
+                    self.assertEqual(set(options), {"artifact-ids", "path"})
+                    path = options["path"]
+                    self.assertRegex(path, r"^\$\{\{ runner\.temp \}\}/[a-z-]+$")
+                    self.assertNotIn(path, seen_paths)
+                    seen_paths.add(path)
+                    # The id comes from an earlier step of this job that checked it is all digits.
+                    match = re.fullmatch(r"\$\{\{ steps\.([a-z0-9_-]+)\.outputs\.([a-z_]+) \}\}", options["artifact-ids"])
+                    self.assertIsNotNone(match, options["artifact-ids"])
+                    check_id, key = match.groups()
+                    checks = [s for s in steps[:index] if s.get("id") == check_id]
+                    self.assertEqual(len(checks), 1)
+                    check = checks[0]
+                    self.assertIn(key, EMIT_OUTPUTS)
+                    self.assertIn(f"${{{{ needs.emit.outputs.{key} }}}}", (check.get("env") or {}).values())
+                    self.assertIn("^[0-9]+$", check["run"])
+                    seen_ids.add(key)
+            with self.subTest(job=name):
+                self.assertEqual(seen_ids, DOWNLOADS.get(name, set()))
+
+    def test_downloads_stay_outside_the_checkouts(self) -> None:
+        for name in JOBS:
+            for step in self.steps(name):
+                if uses_name(step) == "actions/download-artifact":
+                    path = (step.get("with") or {}).get("path", "")
+                    with self.subTest(job=name, path=path):
+                        self.assertNotIn("github.workspace", path)
+                        self.assertNotRegex(path, r"(trusted|site|tooling)")
+
+    def script_step(self, name: str) -> dict:
+        found = [s for s in self.steps(name) if SCRIPT in s.get("run", "")]
+        self.assertEqual(len(found), 1, f"{name}: expected one step running the trusted script")
+        return found[0]
+
+    def test_privileged_phases_get_artifact_dirs_and_plan_values(self) -> None:
+        def script_env(name: str) -> dict:
+            return self.script_step(name).get("env") or {}
+
+        publish = script_env("publish")
+        self.assertEqual(publish.get("GH_TOKEN"), "${{ secrets.GITHUB_TOKEN }}")
+        self.assertEqual(publish.get("YURT_SITE_DIR"), "${{ github.workspace }}/site")
+        push = script_env("push")
+        self.assertEqual(push.get("DIGESTS"), "${{ needs.publish.outputs.digests }}")
+        self.assertEqual(push.get("YURT_SITE_DIR"), "${{ github.workspace }}/site")
+        self.assertNotIn("GH_TOKEN", push)
+        self.assertNotIn("COMPONENTS_DIR", push)
+        downloaded = {
+            name: {(s.get("with") or {}).get("path") for s in self.steps(name) if uses_name(s) == "actions/download-artifact"}
+            for name in ("publish", "push")
+        }
+        self.assertEqual({publish.get("DIST_DIR"), publish.get("COMPONENTS_DIR")}, downloaded["publish"])
+        self.assertEqual({push.get("DIST_DIR")}, downloaded["push"])
+        emit = script_env("emit")
+        self.assertEqual(emit.get("GH_TOKEN"), "${{ secrets.YURT_RUST_READ_TOKEN }}")
+        self.assertEqual(emit.get("YURT_RUST_TOOLING_DIR"), "${{ github.workspace }}/tooling")
+        self.assertEqual(emit.get("YURT_SITE_DIR"), "${{ github.workspace }}/site")
+        self.assertEqual(emit.get("OUT_DIR"), "${{ runner.temp }}/rustup-out")
+        plan = script_env("plan")
+        self.assertEqual(plan.get("GH_TOKEN"), "${{ secrets.YURT_RUST_READ_TOKEN }}")
+        self.assertEqual(
+            {k: plan.get(k) for k in ("RUST_RELEASE", "PUBLISH_DATE", "PRODUCER_HOST", "TOOLING_REF")},
+            {
+                "RUST_RELEASE": "${{ inputs.rust_release }}",
+                "PUBLISH_DATE": "${{ inputs.date }}",
+                "PRODUCER_HOST": "${{ inputs.producer_host }}",
+                "TOOLING_REF": "${{ inputs.tooling_ref }}",
+            },
+        )
+        plan_step = self.script_step("plan")
+        self.assertEqual(plan_step.get("id"), "plan")
+        self.assertIn('OUTPUT_FILE="$GITHUB_OUTPUT"', plan_step["run"])
+        publish_step = self.script_step("publish")
+        self.assertEqual(publish_step.get("id"), "publish")
+        self.assertIn('OUTPUT_FILE="$GITHUB_OUTPUT"', publish_step["run"])
+
+    def test_inputs_reach_only_the_plan_job(self) -> None:
+        for name in JOBS:
+            with self.subTest(job=name):
+                found = re.findall(r"inputs\.[a-z_]+", json.dumps(self.job(name)))
+                if name == "plan":
+                    self.assertTrue(found)
+                else:
+                    self.assertEqual(found, [])
+
+
+EMIT_ENV = "          WORK_DIR: ${{ runner.temp }}/rustup-work\n"
+PUSH_ENV = "          PUSH_TOKEN: ${{ secrets.RUSTUP_DIST_PUBLISH_TOKEN }}\n"
+EMIT_RUN = '        run: |\n          "$GITHUB_WORKSPACE/trusted/tools/publish_rustup_dist.sh" emit\n'
+PLAN_CHECKOUT = "          path: trusted\n          persist-credentials: false\n"
+# No pinned SHA or version comment in any anchor, so a Dependabot bump cannot break the mutation
+# tests. The first site checkout followed directly by setup-python is publish's (emit's is followed
+# by the tooling checkout).
+PUBLISH_SITE = "          ref: main\n          path: site\n          persist-credentials: false\n\n      - uses: actions/setup-python@"
+
+
+def add(anchor: str, lines: str) -> tuple[str, str]:
+    return anchor, anchor + lines
+
+
+# Each mutation is a list of (old, new) replacements of the first occurrence in the workflow text.
+SECRET_MUTATIONS = {
+    "toJSON(secrets) in emit": [add(EMIT_ENV, "          ALL: ${{ toJSON(secrets) }}\n")],
+    "secrets['X'] in emit": [add(EMIT_ENV, "          ALL: ${{ secrets['YURT_RUST_READ_TOKEN'] }}\n")],
+    'secrets["X"] in emit': [add(EMIT_ENV, "          ALL: '${{ secrets[\"RUSTUP_DIST_PUBLISH_TOKEN\"] }}'\n")],
+    "join(secrets) in emit": [add(EMIT_ENV, "          ALL: ${{ join(secrets, ',') }}\n")],
+    "secrets.* in emit": [add(EMIT_ENV, "          ALL: ${{ toJSON(secrets.*) }}\n")],
+    "mixed-case Secrets.X in emit": [add(EMIT_ENV, "          ALL: ${{ Secrets.RUSTUP_DIST_PUBLISH_TOKEN }}\n")],
+    "multi-line expression in emit": [
+        add(EMIT_ENV, "          ALL: >-\n            ${{ toJSON(\n            secrets) }}\n")
+    ],
+    "escaped dollar in emit": [add(EMIT_ENV, '          ALL: "\\x24{{ toJSON(secrets) }}"\n')],
+    "comment-looking line in a block scalar": [add(EMIT_ENV, "          ALL: |\n            # ${{ toJSON(secrets) }}\n")],
+    "anchor and alias carry the read token to push": [
+        (EMIT_ENV, EMIT_ENV + "          ALL: &tok ${{ secrets.YURT_RUST_READ_TOKEN }}\n"),
+        add(PUSH_ENV, "          ALL: *tok\n"),
+    ],
+    "merge key carries emit's step env to push": [
+        ("      - name: Emit the dist and the components\n        env:\n", "      - name: Emit the dist and the components\n        env: &emitenv\n"),
+        (PUSH_ENV, PUSH_ENV + "          <<: *emitenv\n"),
+    ],
+    "step if on secrets": [(EMIT_RUN, "        if: contains(toJSON(secrets), 'x')\n" + EMIT_RUN)],
+    "github.token in emit": [add(EMIT_ENV, "          T: ${{ github.token }}\n")],
+    "GITHUB.TOKEN in emit": [add(EMIT_ENV, "          T: ${{ GITHUB.TOKEN }}\n")],
+    "github['token'] in emit": [add(EMIT_ENV, "          T: ${{ github['token'] }}\n")],
+    "toJSON(github) in emit": [add(EMIT_ENV, "          T: ${{ toJSON(github) }}\n")],
+    "secrets.GITHUB_TOKEN in push": [add(PUSH_ENV, "          T: ${{ secrets.GITHUB_TOKEN }}\n")],
+    "github.token on the plan checkout": [(PLAN_CHECKOUT, "          path: trusted\n          token: ${{ github.token }}\n          persist-credentials: false\n")],
+    "secrets.GITHUB_TOKEN on a publish checkout": [
+        (PUBLISH_SITE, PUBLISH_SITE.replace("          path: site\n", "          path: site\n          token: ${{ secrets.GITHUB_TOKEN }}\n", 1))
+    ],
+}
+
+
+class SecretReferenceTest(unittest.TestCase):
+    def test_the_workflow_has_no_secret_violation(self) -> None:
+        self.assertEqual(secret_violations(WORKFLOW.read_text(encoding="utf-8")), [])
+
+    def test_every_secret_leak_form_is_caught(self) -> None:
+        source = WORKFLOW.read_text(encoding="utf-8")
+        for label, replacements in SECRET_MUTATIONS.items():
+            with self.subTest(mutation=label):
+                text = source
+                for old, new in replacements:
+                    self.assertIn(old, text, "mutation anchor not found")
+                    text = text.replace(old, new, 1)
+                yaml.safe_load(text)  # still a valid YAML document
+                self.assertNotEqual(secret_violations(text), [])
+
+
+CHECK_STEP = "      - name: Check every manifest URL against its sha256\n"
+CHECK_LINE = '--date "$PLAN_DATE"\n'
+CHECKER_LINE = '          python3 "$GITHUB_WORKSPACE/tooling/scripts/verify_rustup_dist_urls.py"'
+EXTRACT_LINE = f"          {EXTRACT_RUN}"
+EXTRACT_STEP = (
+    "      - name: Extract the dist through the validator\n"
+    "        env:\n"
+    "          DIST_DIR: ${{ runner.temp }}/dist-artifact\n"
+    "          DIST_OUT: ${{ runner.temp }}/dist-checked\n"
+    "        run: |\n" + EXTRACT_LINE + "\n"
+)
+CHECKER_STEP = (
+    "      # Tooling code, read-only token, nothing uploaded: its only effect is its exit status.\n"
+    + CHECK_STEP
+    + "        env:\n"
+    "          DIST_OUT: ${{ runner.temp }}/dist-checked\n"
+    "        run: |\n"
+    f"          {CHECK_RUN}"
+)
+PUBLISH_IDS_FAIL = ']] || { echo "an artifact id from emit is not all digits" >&2; exit 1; }'
+PUBLISH_IDS_TEST = '[[ "$DIST_ID" =~ ^[0-9]+$ && "$COMPONENTS_ID" =~ ^[0-9]+$ ]]'
+SINGLE_IDS_FAIL = ']] || { echo "the dist artifact id from emit is not all digits" >&2; exit 1; }'
+
+# Mutations the structural checks must catch (each: old, new; the first occurrence is replaced).
+STRUCTURE_MUTATIONS = {
+    "continue-on-error on the check job": ("  check:\n    needs: [plan, emit, publish]\n", "  check:\n    needs: [plan, emit, publish]\n    continue-on-error: true\n"),
+    "continue-on-error on the check URL step": (CHECK_STEP, CHECK_STEP + "        continue-on-error: true\n"),
+    "continue-on-error on the publish script step": (
+        "      - name: Validate the artifacts and create the release\n",
+        "      - name: Validate the artifacts and create the release\n        continue-on-error: true\n",
+    ),
+    "checker || true": (CHECK_LINE, '--date "$PLAN_DATE" || true\n'),
+    "checker ; true": (CHECK_LINE, '--date "$PLAN_DATE"; true\n'),
+    "set +e before the checker": (CHECKER_LINE, "          set +e\n" + CHECKER_LINE),
+    "checker before extract": (EXTRACT_STEP + CHECKER_STEP, CHECKER_STEP + EXTRACT_STEP),
+    "extract replaced by tar -xf": (EXTRACT_LINE, '          tar -xf "$DIST_DIR/dist.tar" -C "$DIST_OUT"\n'),
+    "extract without -I": (EXTRACT_LINE, EXTRACT_LINE.replace("python3 -I ", "python3 ")),
+    "extract into the download directory": (
+        "          DIST_OUT: ${{ runner.temp }}/dist-checked\n        run: |\n          python3 -I",
+        "          DIST_OUT: ${{ runner.temp }}/dist-artifact\n        run: |\n          python3 -I",
+    ),
+    "checker on the raw artifact": ('--dist "$DIST_OUT/dist"', '--dist "$DIST_DIR/dist"'),
+    "checker dropped for a no-op": (
+        '          python3 "$GITHUB_WORKSPACE/tooling/scripts/verify_rustup_dist_urls.py"',
+        '          echo python3 "$GITHUB_WORKSPACE/tooling/scripts/verify_rustup_dist_urls.py"',
+    ),
+    "publish ids check made non-fatal": (PUBLISH_IDS_FAIL, "]] || true"),
+    "publish ids check replaced by an echo": (PUBLISH_IDS_TEST + " || { echo", 'echo "^[0-9]+$" || { echo'),
+    "publish ids output not the checked value": (
+        "printf 'dist_artifact_id=%s\\ncomponents_artifact_id=%s\\n' \"$DIST_ID\" \"$COMPONENTS_ID\"",
+        "printf 'dist_artifact_id=%s\\ncomponents_artifact_id=%s\\n' \"${DIST_ID%%,*}\" \"$COMPONENTS_ID\"",
+    ),
+    "check/push ids check made non-fatal": (SINGLE_IDS_FAIL, "]] || true"),
+    "push timeout dropped": ("    runs-on: ubuntu-latest\n    timeout-minutes: 15\n", "    runs-on: ubuntu-latest\n"),
+    "check timeout raised": ("    timeout-minutes: 30\n", "    timeout-minutes: 300\n"),
+    "plan timeout dropped": ("    runs-on: ubuntu-latest\n    timeout-minutes: 10\n", "    runs-on: ubuntu-latest\n"),
+}
+
+
+class StructureMutationTest(unittest.TestCase):
+    """Runs WorkflowStructureTest against mutated copies of the workflow: each must fail it."""
+
+    @staticmethod
+    def failing(text: str) -> set[str]:
+        """The structural tests (by id) that fail for this workflow text."""
+        module = sys.modules[__name__]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "publish-rustup-dist.yml"
+            path.write_text(text, encoding="utf-8")
+            with mock.patch.object(module, "WORKFLOW", path):
+                suite = unittest.defaultTestLoader.loadTestsFromTestCase(WorkflowStructureTest)
+                result = unittest.TextTestRunner(stream=io.StringIO(), verbosity=0).run(suite)
+        return {test.id() for test, _ in result.failures + result.errors}
+
+    def test_gating_and_id_check_mutations_are_caught(self) -> None:
+        source = WORKFLOW.read_text(encoding="utf-8")
+        baseline = self.failing(source)  # empty when the workflow is right; compared, so it cannot mask a miss
+        for label, (old, new) in STRUCTURE_MUTATIONS.items():
+            with self.subTest(mutation=label):
+                self.assertIn(old, source, "mutation anchor not found")
+                self.assertTrue(self.failing(source.replace(old, new, 1)) - baseline, f"{label} passed every structural check")
+
+
+TOOLING_DIR = os.environ.get("YURT_RUST_TOOLING_DIR", "")
+
+
+@unittest.skipUnless(
+    TOOLING_DIR and (Path(TOOLING_DIR) / "scripts" / "emit_rustup_dist.py").is_file(),
+    "set YURT_RUST_TOOLING_DIR to a yurt-rust checkout to run the tooling smoke test",
+)
+class ToolingSmokeTest(unittest.TestCase):
+    """The real emitter and checker start without -I (they import their siblings) and accept
+    the flags that tools/publish_rustup_dist.sh and the check job pass. CI cannot read the
+    private yurt-rust, so this runs only locally; it is on the first-dispatch checklist."""
+
+    def help_text(self, script: str) -> str:
+        done = subprocess.run(
+            [sys.executable, str(Path(TOOLING_DIR) / "scripts" / script), "--help"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return done.stdout
+
+    def test_emitter_accepts_the_flags_emit_passes(self) -> None:
+        text = self.help_text("emit_rustup_dist.py")
+        for flag in ("--release-dir", "--site", "--components", "--date", "--producer-host", "--base-url"):
+            self.assertIn(flag, text)
+
+    def test_validator_renders_the_emitter_manifest_byte_for_byte(self) -> None:
+        """Golden test: the validator's vendored render_manifest must equal the emitter's write_manifest."""
+        scripts = Path(TOOLING_DIR) / "scripts"
+        sys.path.insert(0, str(scripts))  # the emitter imports its siblings
+        try:
+            spec = importlib.util.spec_from_file_location("golden_emit_rustup_dist", scripts / "emit_rustup_dist.py")
+            emitter = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(emitter)
+        finally:
+            sys.path.remove(str(scripts))
+        spec = importlib.util.spec_from_file_location("golden_rustup_dist_stage", ROOT / "tools" / "rustup_dist_stage.py")
+        stage = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(stage)
+        version, revision, date = "1.98.0", "0.0.28", "2026-10-17"
+        hosts = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+        entries = {
+            package: {
+                target: (f"{package}-{version}-{target}.tar.gz", f"{index:064x}")
+                for index, target in enumerate(hosts + (["wasm32-yurt-linux-musl"] if package == "rust-std" else []))
+            }
+            for package in ("rustc", "cargo", "rust-std")
+        }
+        base = "https://github.com/YurtOS/yurt-packages/releases/download/rustup-1.98.0-2026-10-17/"
+        expected = emitter.write_manifest(version, revision, date, entries, base)
+        self.assertEqual(stage.render_manifest(version, revision, date, entries, base), expected)
+
+    def test_checker_accepts_the_flags_check_passes(self) -> None:
+        text = self.help_text("verify_rustup_dist_urls.py")
+        for flag in ("--dist", "--channel", "--date"):
+            self.assertIn(flag, text)
+
+
+if __name__ == "__main__":
+    unittest.main()

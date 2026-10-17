@@ -57,30 +57,121 @@ To publish, run the manual `Publish Rustup Dist` workflow with:
 | `date` | `YYYY-MM-DD`, empty means today (UTC) |
 | `producer_host` | host whose archive supplies the guest `std` (default `x86_64-unknown-linux-gnu`) |
 
-All logic is in `tools/publish_rustup_dist.sh`. It uploads the components, checks
-that every manifest URL resolves to its declared sha256, and only then commits
-the manifests. A failed upload or check publishes no manifest. If the release
-`rustup-<X.Y.Z>-<date>` exists and a manifest for that date is already
-published, the run refuses. The emitter also requires a date strictly later than
-any existing dated directory under `dist/`, so a same-day republish is not
-possible; use a later date (dates in the future are rejected). A release left
-over from a failed run (no published manifest) is deleted and recreated. Runs
-are serialized with `Publish Package` by their shared `publish-package`
-concurrency group, and the final push rebases onto `main` and retries a bounded
-number of times.
+The workflow runs five jobs, each on a fresh VM, in the order
+`plan → emit → publish → check → push`. The phases are in
+`tools/publish_rustup_dist.sh` (`plan`, `emit`, `publish`, `push`), which does
+only tokens, `gh`, `git` and process boundaries. Every rule (inputs, plan,
+release manifest, packing, artifact validation, date rules) is in
+`tools/rustup_dist_stage.py`.
 
-Until [YurtOS/yurt-rust#72](https://github.com/YurtOS/yurt-rust/pull/72) merges,
-the default `tooling_ref` of `main` does not contain the emitter and the run
-fails; pass the PR's branch or SHA as `tooling_ref` until then.
+| Job | What it does | Credential |
+| --- | --- | --- |
+| `plan` | validates the inputs, resolves an empty date to today (UTC) once, resolves `tooling_ref` to a commit SHA | `YURT_RUST_READ_TOKEN` |
+| `emit` | runs the yurt-rust emitter at the planned SHA and uploads two artifacts: `rustup-dist` (one `dist.tar` with the five manifest files) and `rustup-components` (the tarballs) | `YURT_RUST_READ_TOKEN` |
+| `publish` | validates both artifacts as data, rechecks eligibility on a fresh `main`, creates the release and uploads the components | the job's `GITHUB_TOKEN` (`contents: write`) |
+| `check` | extracts `dist.tar` through the validator (only the five expected files), then runs the yurt-rust URL checker: every manifest URL must resolve to its declared sha256 | `YURT_RUST_READ_TOKEN` |
+| `push` | verifies the digests from `publish`, then commits the five files onto a fresh `main` and pushes | `RUSTUP_DIST_PUBLISH_TOKEN` (environment `rustup-publish`) |
+
+Code from `tooling_ref` (the emitter and the checker) runs only in `emit` and
+`check`, which hold only the read-only token. `publish` and `push` run only this
+repository's scripts at the dispatched commit. They take every identity value
+(version, revision, date, tag, producer host, tooling SHA) from `plan`, never
+from an artifact.
+
+A failed upload or check publishes no manifest. If the release
+`rustup-<X.Y.Z>-<date>` exists and a manifest for that date is already
+published, the run refuses. The date must also be strictly later than any
+existing dated directory under `dist/`, so a same-day republish is not possible;
+use a later date (dates in the future are rejected). A release left over from a
+failed run (no published manifest) is deleted and recreated.
+
+Runs are serialized with `Publish Package` by their shared `publish-package`
+concurrency group. Deleting a left-over release is safe only because of this
+group. A run now holds the group longer, which can replace a pending
+`Publish Package` run (a group keeps one pending run); if that happens, dispatch
+that workflow again.
+
+`push` never rebases. Each of its (at most three) attempts resets to a fresh
+`main`, rechecks the date rules and stages exactly the five files. A publication
+that lands in the meantime makes the run fail instead of being merged over.
+
+**Reruns.** After any failure, dispatch a new full run. `publish` and `push`
+refuse unless `github.run_attempt` is 1, so "Re-run failed jobs" fails in those
+jobs. A rerun could otherwise skip validation or the URL check. A failed run can
+leave a partial release, uploaded assets without manifests, or (if `push` timed
+out after it landed) a published manifest. The next dispatch handles the first
+two by recreating the release. For the third it refuses: check `main`.
+Artifacts are kept for one day.
+
+### Security model (what the isolation covers)
+
+The five-job split keeps code from `tooling_ref` away from
+`RUSTUP_DIST_PUBLISH_TOKEN`, and the isolation contract covers that token only.
+`push` is the only job that can read it. `push` restores no cache, and it
+accepts only the artifact whose digests `publish` computed.
+
+It does **not** cover `PACKAGE_PUBLISH_TOKEN`:
+- Tooling code in `emit` and `check` runs on the runner as the runner user.
+  It can act with that job's Actions runtime token, and a dispatch on `main`
+  writes cache entries scoped to `main`.
+- `publish-package.yml` restores such a cache (`Swatinem/rust-cache`) in the
+  job that holds `PACKAGE_PUBLISH_TOKEN` and `contents: write`.
+- So tooling code can still reach `PACKAGE_PUBLISH_TOKEN` through a poisoned
+  cache. This is not a regression: before this change, the tooling held that
+  token directly.
+- A follow-up issue will remove the cache restore from that job, or move the
+  build into a job without credentials.
+
+Also accepted: tooling code can reach the read-only `YURT_RUST_READ_TOKEN` in
+the jobs it runs in.
 
 ### Setup and access
 
-- `PACKAGE_PUBLISH_TOKEN` (repository secret) needs read access to the private
-  `YurtOS/yurt-rust` (contents and releases: the tooling checkout and
-  `gh release download`) and write access to `YurtOS/yurt-packages` (contents and
-  releases: committing manifests, creating releases and uploading assets).
-  Its push to `main` is what triggers `pages.yml`; a push made with the default
-  `GITHUB_TOKEN` would not.
+- `YURT_RUST_READ_TOKEN` (repository secret): a fine-grained PAT for
+  `YurtOS/yurt-rust` only, with Contents: read. It is used for the tooling
+  checkout, `gh release download` and the SHA lookup, by `plan`, `emit` and
+  `check` only.
+- `RUSTUP_DIST_PUBLISH_TOKEN`: a fine-grained PAT for `YurtOS/yurt-packages`
+  only, with Contents: read and write and no Workflows permission. Store it as a
+  secret of the `rustup-publish` environment, not as a repository secret. Only
+  `push` reads it. It is a PAT because its push to `main` is what triggers
+  `pages.yml`; a push made with the default `GITHUB_TOKEN` would not.
+- Create the `rustup-publish` environment under Settings > Environments:
+  - set deployment branches to "Selected branches" with `main` only, and add no
+    tag rules;
+  - add `RUSTUP_DIST_PUBLISH_TOKEN` as an environment secret;
+  - delete any repository secret of the same name, which any workflow on any
+    branch could read.
+- Release creation and asset upload in `publish` use that job's `GITHUB_TOKEN`
+  (`contents: write`), which expires with the job.
+- `PACKAGE_PUBLISH_TOKEN` is untouched: `Publish Package` still uses it, and this
+  workflow no longer does.
+- First-dispatch checklist (needs the maintainer's go; nothing here has run on a
+  hosted runner yet):
+  - **First, before any dispatch:** under Settings > Environments, confirm that:
+    - `rustup-publish` exists, with deployment branches set to `main` only;
+    - it holds `RUSTUP_DIST_PUBLISH_TOKEN`;
+    - **no** repository secret named `RUSTUP_DIST_PUBLISH_TOKEN` remains.
+
+    This matters because a dispatch creates a missing environment automatically,
+    with no branch rule. `push` would then read the repository secret, which a
+    workflow on any branch can also read.
+  - The organization may need to approve the two fine-grained PATs.
+  - The repository's or the organization's Actions settings may limit what
+    `GITHUB_TOKEN` can do. If `publish` fails with a 403 on `release create`,
+    check those settings. Confirm this at the first dispatch.
+  - `YURT_RUST_READ_TOKEN` is a repository secret, so a workflow on any branch can
+    read it. This is accepted: it is read-only, on the repository whose tooling
+    the dispatcher already chooses.
+  - Before dispatching, run the tooling smoke test locally against a
+    `yurt-rust` checkout at the `tooling_ref` you will use:
+    `YURT_RUST_TOOLING_DIR=<checkout> python3 -m unittest discover -s tests -p 'test_publish_workflow.py'`
+    (needs PyYAML). It runs the real emitter and checker `--help`, and compares
+    the emitter's `write_manifest` byte for byte with the validator's vendored
+    `render_manifest`. CI cannot read `yurt-rust`, so there it skips.
+  - Only a hosted run proves these: which secrets each job sees, the
+    environment's branch gating, artifact transfer by id, the `run_attempt`
+    refusal and the real Pages trigger.
 - GitHub Pages must be enabled for this repository with source "GitHub Actions"
   before `pages.yml` can deploy. For the `YurtOS` organization and this
   repository the default Pages root, which is what users pass as `--dist-root`,
@@ -94,6 +185,15 @@ fails; pass the PR's branch or SHA as `tooling_ref` until then.
   publishes yurt-rust's git SHA, release tag and asset names, sizes and hashes in
   `dist/<date>/yurt-release-manifest.json`; this was decided by hosting the dist
   under `yurt-packages`.
+- Artifacts are public while they exist. This repository is public, so any
+  signed-in GitHub user can download the artifacts that `emit` uploads (the
+  re-split release archives, about 1 GB, kept for one day). This holds after a
+  failed or unintended run too. Only dispatch for a release that is meant to be
+  published.
+- A missing `PUSH_TOKEN` (none in the environment and no repository secret of
+  the same name) is detected only in `push`. By then `publish` has already
+  created the release. The next dispatch recreates a release that has no
+  published manifest.
 
 Clients use `yurt-rustup-init.sh` from the `yurt-rust` repository. It reads its
 pins file `scripts/rustup-init.pins` relative to its own location, so run it
