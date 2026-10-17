@@ -644,9 +644,15 @@ class CliTests(Case):
         lines = (self.tmp / "output").read_text().splitlines()
         return dict(line.split("=", 1) for line in lines)
 
+    def inputs(self, **overrides):
+        """The plan job's inputs, as the workflow passes them (environment only)."""
+        env = {"RUST_RELEASE": RELEASE, "PUBLISH_DATE": DATE, "PRODUCER_HOST": PRODUCER, "OUTPUT_FILE": str(self.tmp / "output")}
+        env.update(overrides)
+        return {k: v for k, v in env.items() if v is not None}
+
     def test_plan_appends_outputs(self):
         (self.tmp / "output").write_text("earlier=kept\n")
-        code, _, err = self.main(["plan", "--release", RELEASE, "--date", DATE, "--producer-host", PRODUCER, "--tooling-sha", TOOLING_SHA], {"OUTPUT_FILE": str(self.tmp / "output")})
+        code, _, err = self.main(["plan", "--tooling-sha", TOOLING_SHA], self.inputs())
         self.assertEqual(code, 0, err)
         self.assertEqual(self.outputs(), {
             "earlier": "kept", "release_tag": RELEASE, "version": VERSION, "revision": REVISION, "date": DATE,
@@ -654,15 +660,127 @@ class CliTests(Case):
         })
 
     def test_plan_empty_date_is_today_utc(self):
-        code, _, err = self.main(["plan", "--release", RELEASE, "--date", "", "--producer-host", PRODUCER, "--tooling-sha", TOOLING_SHA], {"OUTPUT_FILE": str(self.tmp / "output")})
+        code, _, err = self.main(["plan", "--tooling-sha", TOOLING_SHA], self.inputs(PUBLISH_DATE=""))
         self.assertEqual(code, 0, err)
         self.assertEqual(self.outputs()["date"], datetime.datetime.now(datetime.timezone.utc).date().isoformat())
 
     def test_plan_rejects_bad_input(self):
-        code, _, err = self.main(["plan", "--release", RELEASE, "--date", DATE, "--producer-host", PRODUCER, "--tooling-sha", "abc"], {"OUTPUT_FILE": str(self.tmp / "output")})
+        code, _, err = self.main(["plan", "--tooling-sha", "abc"], self.inputs())
         self.assertEqual(code, 1)
         self.assertIn("is not a 40-hex commit SHA", err)
         self.assertFalse((self.tmp / "output").exists())
+
+    def test_check_inputs_names_the_bad_variable_and_writes_nothing(self):
+        future = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=2)).date().isoformat()
+        bad = {
+            "RUST_RELEASE": [None, "", "rust-v1.99-0.0.1", "rust-v1.99.0-0.0.1; id", "rust-v1.99.0-0.0.1\n"],
+            "PUBLISH_DATE": ["2026-02-30", "20261020", future],
+            "PRODUCER_HOST": [None, "x86_64-apple-darwin", "x86_64-unknown-linux-gnu x"],
+        }
+        code, out, err = self.main(["check-inputs"], self.inputs())
+        self.assertEqual((code, out), (0, ""), err)
+        for name, values in bad.items():
+            for value in values:
+                with self.subTest(name=name, value=value):
+                    code, out, err = self.main(["check-inputs"], self.inputs(**{name: value}))
+                    self.assertEqual((code, out), (1, ""))
+                    self.assertIn(name, err)
+                    self.assertFalse((self.tmp / "output").exists())
+
+    def test_check_plan(self):
+        future = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=2)).date().isoformat()
+        code, out, err = self.main(["check-plan"], self.plan_env())
+        self.assertEqual((code, out), (0, ""), err)
+        for override in ({"PLAN_RELEASE_TAG": ""}, {"PLAN_DATE": future, "PLAN_TAG": f"rustup-{VERSION}-{future}"},
+                         {"PLAN_PRODUCER_HOST": "x86_64-apple-darwin"}, {"PLAN_VERSION": "1.99.1"}):
+            with self.subTest(override=override):
+                code, _, err = self.main(["check-plan"], self.plan_env(**override))
+                self.assertEqual(code, 1)
+                self.assertIn("PLAN_", err)
+
+    def test_check_release(self):
+        release = {"release": {"tag": RELEASE, "rust_version": VERSION, "revision": REVISION}, "assets": []}
+        good = json.dumps(release)
+        cases = {
+            "wrong tag": good.replace(RELEASE, "rust-v1.99.0-0.0.2"),
+            "wrong version": good.replace(f'"{VERSION}"', '"1.99.1"'),
+            "wrong revision": good.replace(f'"{REVISION}"', '"0.0.2"'),
+            "not json": good[:-1],
+            "not an object": "[1]",
+            "no release": json.dumps({"assets": []}),
+            "release not an object": json.dumps({"release": "x"}),
+            "duplicate key": good[:-1] + f', "release": {json.dumps(release["release"])}}}',
+            "NaN": good.replace('"assets": []', '"assets": NaN'),
+            "overflowing float": good.replace('"assets": []', '"assets": 1e999'),
+            "oversized": json.dumps({**release, "pad": "x" * stage.MAX_MEMBER_BYTES}),
+        }
+        path = self.tmp / "release-manifest.json"
+        path.write_text(good)
+        code, out, err = self.main(["check-release", "--manifest", str(path)], self.plan_env())
+        self.assertEqual((code, out), (0, ""), err)
+        for name, text in cases.items():
+            with self.subTest(case=name):
+                path.write_text(text)
+                code, _, err = self.main(["check-release", "--manifest", str(path)], self.plan_env())
+                self.assertEqual(code, 1)
+                self.assertIn("release manifest", err)
+                self.assertIn("revision", err)
+        code, _, err = self.main(["check-release", "--manifest", str(self.tmp / "missing.json")], self.plan_env())
+        self.assertEqual(code, 1)
+
+    def emitted_site(self, members=None):
+        """A site as the emitter leaves it: the five files under site/dist."""
+        site = self.tmp / "emitted"
+        for name, data in (members or dist_members()).items():
+            (site / name).parent.mkdir(parents=True, exist_ok=True)
+            (site / name).write_bytes(data)
+        return site
+
+    def test_pack_writes_exactly_the_five_members_and_self_checks(self):
+        site, out = self.emitted_site(), self.tmp / "out" / "dist.tar"
+        out.parent.mkdir()
+        code, stdout, err = self.main(["pack", "--site", str(site), "--out", str(out)], self.plan_env())
+        self.assertEqual((code, stdout), (0, ""), err)
+        with tarfile.open(out, "r:") as tar:
+            self.assertEqual(tar.format, tarfile.PAX_FORMAT)
+            members = tar.getmembers()
+            self.assertEqual([m.name for m in members], list(FIVE))
+            self.assertEqual({(m.type, m.mode, m.mtime) for m in members}, {(tarfile.REGTYPE, 0o644, 0)})
+        self.assertEqual(stage.read_dist_tar(out, PLAN), dist_members())
+        code, _, err = self.main(["pack", "--site", str(site), "--out", str(out)], self.plan_env())
+        self.assertEqual(code, 1, "an existing output is never overwritten")
+
+    def test_pack_refuses_what_the_emitter_did_not_write_as_regular_files(self):
+        def link_file(site):
+            (site / MOVING).unlink()
+            (site / MOVING).symlink_to(site / DATED)
+
+        def link_dir(site):
+            real = self.tmp / "elsewhere"
+            (site / "dist" / DATE).rename(real)
+            (site / "dist" / DATE).symlink_to(real)
+
+        def directory(site):
+            (site / PROVENANCE).unlink()
+            (site / PROVENANCE).mkdir()
+
+        cases = {
+            "missing file": (lambda site: (site / DATED_SHA).unlink(), "regular file"),
+            "symlinked file": (link_file, "regular file"),
+            "symlinked dated dir": (link_dir, "regular file"),
+            "directory": (directory, "regular file"),
+            "bad provenance": (lambda site: (site / PROVENANCE).write_bytes(b'{"release_tag": '), "provenance is not valid JSON"),
+        }
+        for name, (change, message) in cases.items():
+            with self.subTest(case=name):
+                subprocess.run(["rm", "-rf", str(self.tmp / "emitted"), str(self.tmp / "elsewhere"), str(self.tmp / "out")], check=True)
+                site, out = self.emitted_site(), self.tmp / "out" / "dist.tar"
+                out.parent.mkdir()
+                change(site)
+                code, _, err = self.main(["pack", "--site", str(site), "--out", str(out)], self.plan_env())
+                self.assertEqual(code, 1)
+                self.assertIn(message, err)
+                self.assertFalse(out.exists(), "nothing is left behind on a refusal")
 
     def test_inconsistent_plan_env_is_rejected(self):
         for key, value in (("PLAN_TAG", "rustup-1.99.0-2026-09-30"), ("PLAN_VERSION", "1.98.0"), ("PLAN_REVISION", "0.0.2"), ("PLAN_DATE", "")):
@@ -768,8 +886,8 @@ class CliTests(Case):
 
     def test_runs_isolated_as_a_script(self):
         done = subprocess.run(
-            [sys.executable, "-I", str(TOOL), "plan", "--release", RELEASE, "--date", DATE, "--producer-host", PRODUCER, "--tooling-sha", TOOLING_SHA],
-            env={"PATH": os.environ.get("PATH", ""), "OUTPUT_FILE": str(self.tmp / "output")}, capture_output=True, text=True,
+            [sys.executable, "-I", str(TOOL), "plan", "--tooling-sha", TOOLING_SHA],
+            env={"PATH": os.environ.get("PATH", ""), **self.inputs()}, capture_output=True, text=True,
         )
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(self.outputs()["tag"], TAG)
@@ -992,7 +1110,7 @@ class EscapingTests(Case):
     def test_main_neutralises_control_characters(self):
         stderr = io.StringIO()
         with mock.patch.object(stage, "run", side_effect=stage.StageError("a\nb\r\x1b[31m c")), contextlib.redirect_stderr(stderr):
-            self.assertEqual(stage.main(["plan", "--release", "r", "--date", "", "--producer-host", "h", "--tooling-sha", "s"]), 1)
+            self.assertEqual(stage.main(["plan", "--tooling-sha", "s"]), 1)
         out = stderr.getvalue()
         self.assertEqual(out.count("\n"), 1)
         self.assertTrue(out.endswith("\n"))
