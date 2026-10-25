@@ -398,6 +398,74 @@ class RepoTest(unittest.TestCase):
         (self.root / f"{new}.bundle").write_bytes(rs.PLACEHOLDER)
         self.assertEqual(self.problems({}), [f"{new}.bundle: not a JSON Sigstore bundle"])
 
+    # N1: every release any signed index ever listed stays protected
+
+    def test_dropped_then_re_added_release_is_refused(self) -> None:
+        self.release()  # v18 lists busybox yurt_1 (B)
+        write_package(self.root, "busybox", [("1.37.0", "yurt_0", b"busybox")])
+        (self.root / self.B).unlink()
+        (self.root / f"{self.B}.bundle").unlink()
+        self.commit("drop busybox yurt_1")
+        self.release("2026-10-27T00:00:00Z")  # v19 does not list it
+        write_package(self.root, "busybox", [("1.37.0", "yurt_0", b"busybox"), ("1.37.0", "yurt_1", b"other bytes")])
+        self.commit("re-add busybox yurt_1 with new bytes")
+        problems = self.problems({})
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("changed after it was signed", problems[0])
+        with self.assertRaisesRegex(rs.SigningError, "refusing to sign"):
+            rs.plan(self.root, {}, self.cosign)
+
+    def test_a_dropped_release_re_added_unchanged_needs_its_old_bundle(self) -> None:
+        self.release()
+        old_bundle = (self.root / f"{self.B}.bundle").read_bytes()
+        write_package(self.root, "busybox", [("1.37.0", "yurt_0", b"busybox")])
+        (self.root / self.B).unlink()
+        (self.root / f"{self.B}.bundle").unlink()
+        self.commit("drop busybox yurt_1")
+        self.release("2026-10-27T00:00:00Z")
+        write_package(self.root, "busybox", [("1.37.0", "yurt_0", b"busybox"), ("1.37.0", "yurt_1", b"busybox 1")])
+        self.commit("re-add busybox yurt_1 without its bundle")
+        self.assertIn("deleted after", self.problems({})[0])
+        with self.assertRaises(rs.SigningError):
+            rs.plan(self.root, {}, self.cosign)
+        (self.root / f"{self.B}.bundle").write_bytes(old_bundle)
+        self.commit("restore its bundle")
+        self.assertEqual(self.problems({}), [])
+
+    # N2: a merge that hides the newer signed line is still a rollback
+
+    def test_ours_merge_hiding_newer_signed_indexes_is_a_rollback(self) -> None:
+        self.release()  # v18
+        git(self.root, "branch", "old")
+        self.release("2026-10-27T00:00:00Z")  # v19
+        self.release("2026-10-28T00:00:00Z")  # v20
+        git(self.root, "checkout", "-q", "old")
+        git(self.root, "merge", "-q", "-s", "ours", "-m", "merge main, keep v18", "main")
+        git(self.root, "checkout", "-q", "-B", "main")
+        self.assertEqual(json.loads((self.root / "index.json").read_bytes())["index_version"], 18)
+        self.assertEqual(self.problems({}), ["index.json: index_version 18 rolls back the signed index_version 20"])
+        with self.assertRaises(rs.SigningError):
+            rs.regenerate_index(self.root, rs.parse_time("2026-10-29T00:00:00Z"), {}, self.cosign)
+
+    # N3: a commit re-holding a signed index beside other package files never wedges
+
+    def test_restored_index_bundle_beside_changed_metadata_does_not_wedge(self) -> None:
+        self.release()
+        good_bundle = (self.root / "index.json.bundle").read_bytes()
+        good_package = (self.root / "packages" / "busybox.json").read_bytes()
+        (self.root / "index.json.bundle").unlink()
+        self.commit("delete the index bundle")
+        (self.root / "index.json.bundle").write_bytes(good_bundle)
+        package = json.loads(good_package)
+        package["versions"][0]["yanked"] = True
+        (self.root / "packages" / "busybox.json").write_bytes(rs.dump_json(package))
+        self.commit("restore the bundle, with changed metadata")
+        (self.root / "packages" / "busybox.json").write_bytes(good_package)
+        self.commit("restore the metadata")
+        self.assertEqual(self.problems({}), [])
+        self.assertEqual(rs.plan(self.root, {}, self.cosign), [])
+        self.release("2026-10-27T00:00:00Z")
+
     # F2: the legacy list is dead once an index is signed
 
     def test_legacy_entry_re_added_after_the_first_release_is_refused(self) -> None:
