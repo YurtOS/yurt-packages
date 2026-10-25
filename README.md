@@ -64,6 +64,11 @@ signed `index.json` (so CI and `Release` check out the full history):
 - only releases no signed index ever listed may be unsigned ("pending"), and
   only those get signed.
 
+History bundles are verified against the current trusted root. If Sigstore
+retires a key from it, old bundles signed under that key stop verifying and drop
+out of the history, together with the protection of releases that only they
+listed. Any release a later signed index also listed keeps its protection.
+
 That history is the anchor, so protect `main` against force-pushes and
 deletion (a branch protection rule or ruleset that still lets
 `github-actions[bot]` push): a force-pushed or orphan `main` drops the signed
@@ -83,9 +88,11 @@ Each run:
 3. signs the planned archives and `index.json`;
 4. runs `tools/repo_signing.py check --strict --cosign cosign`, which runs
    `cosign verify-blob` with the pinned identity on every bundle. Only a
-   verification failure (cosign's `Error: failed to verify ...`) counts as an
-   invalid bundle. A cosign tool error (TUF, network, timeout, crash) aborts the
-   run;
+   cosign v3.0.6 that verifies the in-repo goreleaser fixture
+   (`tests/fixtures/sigstore/`) counts as healthy. After that, an exit 1 counts as
+   an invalid bundle (a malformed bundle in history is skipped). A failed health
+   check, a wrong version, any other exit, a timeout or a missing binary aborts
+   the run;
 5. drops the signed entries from `tools/legacy_placeholder_bundles.txt` and
    commits. It then fetches `main`: if another writer has changed the index, a
    bundle, `packages/` or `artifacts/` since the checkout, it fails (the next run

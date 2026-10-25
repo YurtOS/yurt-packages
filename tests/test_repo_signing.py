@@ -510,7 +510,7 @@ class RepoTest(unittest.TestCase):
 
     def test_missing_cosign_aborts(self) -> None:
         self.release()
-        with self.assertRaisesRegex(rs.SigningError, "cosign could not verify"):
+        with self.assertRaisesRegex(rs.SigningError, "cosign could not run"):
             rs.check(self.root, {}, str(self.root / "no-such-cosign"))
 
     # P1: a malformed bundle in history is invalid, not a cosign tool error

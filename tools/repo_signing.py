@@ -48,6 +48,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -63,6 +64,7 @@ PLACEHOLDER = b"local test fixture bundle\n"
 # proven against yurt-pkg's verifier.
 TLOG_KIND = ("hashedrekord", "0.0.1")
 INDEX = "index.json"
+VALID_NAME = re.compile(r"[a-z0-9][a-z0-9._+-]*")
 EXPIRY = dt.timedelta(days=7)
 # Fulcio certificate extensions: the OIDC issuer (v2 is a DER UTF8String, v1
 # the raw string).
@@ -112,6 +114,8 @@ def published_archives(root: Path) -> list[Archive]:
     archives = []
     for package_path in sorted((root / "packages").glob("*.json")):
         package = json.loads(package_path.read_bytes())
+        if not VALID_NAME.fullmatch(package_path.stem):
+            raise SigningError(f"invalid package name {package_path.stem!r}: expected {VALID_NAME.pattern}")
         if package.get("name") != package_path.stem:
             raise SigningError(f"{package_path.relative_to(root)} declares name {package.get('name')!r}")
         for version in package["versions"]:
@@ -257,42 +261,59 @@ def _bundle_problem(data: dict, payload: bytes) -> str | None:
     return None
 
 
-# cosign v3.0.6 starts every verification failure (identity, signature,
-# log inclusion) with this; anything else is cosign failing as a tool.
-COSIGN_VERIFY_FAILURE = "Error: failed to verify "
+COSIGN_VERSION = "v3.0.6"
+# A real GitHub Actions bundle and its identity (see tests/fixtures/sigstore/README.md).
+HEALTH_FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "sigstore"
+HEALTH_SUBJECT = "https://github.com/goreleaser/goreleaser/.github/workflows/release.yml@refs/tags/v2.19.0"
+
+
+def _run_cosign(cosign: str, args: list[str]) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run([cosign, *args], capture_output=True, text=True, timeout=300)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise SigningError(f"cosign could not run: {error}") from error
+
+
+def _verify_blob(cosign: str, bundle: Path, payload: Path, subject: str) -> tuple[int, str]:
+    result = _run_cosign(
+        cosign,
+        ["verify-blob", "--bundle", str(bundle), "--certificate-identity", subject,
+         "--certificate-oidc-issuer", ISSUER, str(payload)],
+    )
+    return result.returncode, (result.stderr or result.stdout).strip()
+
+
+def cosign_health(cosign: str) -> None:
+    """Abort unless cosign is v3.0.6 and verifies the in-repo fixture bundle.
+
+    After this passes, an exit 1 from cosign verify-blob means the bundle is
+    invalid (malformed, wrong identity, bad signature or log proof), never
+    that cosign itself is broken. Run once per command (find_anchor)."""
+    version = _run_cosign(cosign, ["version"])
+    versions = [line.split()[-1] for line in version.stdout.splitlines() if line.startswith("GitVersion:")]
+    if version.returncode != 0 or versions != [COSIGN_VERSION]:
+        raise SigningError(f"cosign {COSIGN_VERSION} is required, got {versions or version.stdout.strip()!r}")
+    code, output = _verify_blob(
+        cosign,
+        HEALTH_FIXTURE / "goreleaser-v2.19.0-checksums.txt.sigstore.json",
+        HEALTH_FIXTURE / "goreleaser-v2.19.0-checksums.txt",
+        HEALTH_SUBJECT,
+    )
+    if code != 0:
+        raise SigningError(f"cosign health check failed (it does not verify the goreleaser fixture, exit {code}): {output}")
 
 
 def cosign_problem(cosign: str, bundle: Path, payload: Path) -> str | None:
-    """A verification failure's message, or None if it verifies.
+    """None if it verifies, the failure if cosign rejects it (exit 1).
 
-    A tool error (cosign missing, crashed, timed out, or a TUF, network or
-    usage error) raises SigningError: it says nothing about the bundle, so it
-    must never count as an invalid bundle and drop protections."""
-    try:
-        result = subprocess.run(
-            [
-                cosign,
-                "verify-blob",
-                "--bundle",
-                str(bundle),
-                "--certificate-identity",
-                SUBJECT,
-                "--certificate-oidc-issuer",
-                ISSUER,
-                str(payload),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise SigningError(f"cosign could not verify {bundle.name}: {error}") from error
-    output = (result.stderr or result.stdout).strip()
-    if result.returncode == 0:
+    Call only after cosign_health. Any other exit, a missing binary or a
+    timeout raises SigningError: it says nothing about the bundle."""
+    code, output = _verify_blob(cosign, bundle, payload, SUBJECT)
+    if code == 0:
         return None
-    if result.returncode == 1 and any(line.startswith(COSIGN_VERIFY_FAILURE) for line in output.splitlines()):
+    if code == 1:
         return f"cosign verify-blob failed: {output}"
-    raise SigningError(f"cosign could not verify {bundle.name} (exit {result.returncode}): {output}")
+    raise SigningError(f"cosign could not verify {bundle.name} (exit {code}): {output}")
 
 
 def cosign_bytes_problem(cosign: str, bundle: bytes, payload: bytes) -> str | None:
@@ -336,20 +357,30 @@ def find_anchor(root: Path, cosign: str | None = None) -> Anchor | None:
         raise SigningError("not a git checkout: the signed history is needed")
     if git(root, "rev-parse", "--is-shallow-repository") != b"false\n":
         raise SigningError("shallow clone: the signed history is needed (fetch-depth: 0)")
+    if cosign:
+        cosign_health(cosign)
     log = git(root, "log", "--full-history", "--format=%H", "HEAD", "--", INDEX, f"{INDEX}.bundle")
     if log is None:
         return None  # no commit yet
     anchor = None
-    verified: dict[tuple[bytes, bytes], bool] = {}
+    verified: dict[tuple[str, str], bool] = {}  # (index blob, bundle blob) -> valid
     blob_cache: dict[str, bytes | None] = {}
+    def blob(blob_id: str) -> bytes | None:
+        if blob_id not in blob_cache:
+            blob_cache[blob_id] = git(root, "cat-file", "blob", blob_id)
+        return blob_cache[blob_id]
+
     for commit in log.decode().split():
-        bundle = git(root, "show", f"{commit}:{INDEX}.bundle")
-        index = git(root, "show", f"{commit}:{INDEX}")
-        if bundle is None or index is None:
+        blobs = tree_blobs(root, commit)
+        if INDEX not in blobs or f"{INDEX}.bundle" not in blobs:
             continue
-        pair = (hashlib.sha256(index).digest(), hashlib.sha256(bundle).digest())
+        pair = (blobs[INDEX], blobs[f"{INDEX}.bundle"])
+        index = blob(pair[0])
+        if index is None:
+            continue
         if pair not in verified:
-            verified[pair] = verify(bundle, index, cosign) is None
+            bundle = blob(pair[1])
+            verified[pair] = bundle is not None and verify(bundle, index, cosign) is None
         if not verified[pair]:
             continue
         try:
@@ -362,14 +393,9 @@ def find_anchor(root: Path, cosign: str | None = None) -> Anchor | None:
             anchor = Anchor(version, index, {}, {})
         elif version > anchor.index_version:
             anchor.index_version, anchor.index = version, index
-        blobs = package_blobs(root, commit)
         for name, entry in pinned.items():
-            blob = blobs.get(f"packages/{name}.json")
-            data = None
-            if blob is not None:
-                if blob not in blob_cache:
-                    blob_cache[blob] = git(root, "cat-file", "blob", blob)
-                data = blob_cache[blob]
+            blob_id = blobs.get(f"packages/{name}.json")
+            data = blob(blob_id) if blob_id else None
             if data is None or hashlib.sha256(data).hexdigest() != entry.get("sha256") or len(data) != entry.get("size"):
                 continue  # this commit re-holds the index beside other metadata; the one that signed it holds it
             for release in json.loads(data)["versions"]:
@@ -379,16 +405,21 @@ def find_anchor(root: Path, cosign: str | None = None) -> Anchor | None:
     return anchor
 
 
-def package_blobs(root: Path, commit: str) -> dict[str, str]:
-    """packages/*.json path -> blob id at `commit`, from one ls-tree."""
-    listing = git(root, "ls-tree", commit, "packages/") or b""
+def tree_blobs(root: Path, commit: str, paths: tuple[str, ...] = (INDEX, f"{INDEX}.bundle", "packages/")) -> dict[str, str]:
+    """path -> blob id at `commit` for index.json, its bundle and packages/*,
+    from one NUL-separated ls-tree (no path quoting)."""
+    listing = git(root, "ls-tree", "-z", commit, "--", *paths) or b""
     blobs = {}
-    for line in listing.decode().splitlines():
-        meta, _, path = line.partition("\t")
+    for entry in listing.split(b"\0"):
+        meta, _, path = entry.partition(b"\t")
         fields = meta.split()
-        if len(fields) == 3 and fields[1] == "blob":
-            blobs[path] = fields[2]
+        if len(fields) == 3 and fields[1] == b"blob":
+            blobs[path.decode("utf-8", "surrogateescape")] = fields[2].decode()
     return blobs
+
+
+def package_blobs(root: Path, commit: str) -> dict[str, str]:
+    return tree_blobs(root, commit, ("packages/",))
 
 
 def committed_bundles(root: Path) -> list[str]:
