@@ -513,6 +513,65 @@ class RepoTest(unittest.TestCase):
         with self.assertRaisesRegex(rs.SigningError, "cosign could not verify"):
             rs.check(self.root, {}, str(self.root / "no-such-cosign"))
 
+    # P1: a malformed bundle in history is invalid, not a cosign tool error
+
+    def test_malformed_bundle_in_history_is_skipped_not_a_wedge(self) -> None:
+        self.release()  # v18
+        good_index = (self.root / "index.json").read_bytes()
+        good_bundle = (self.root / "index.json.bundle").read_bytes()
+        index = json.loads(good_index)
+        index["index_version"] = 50
+        (self.root / "index.json").write_bytes(rs.dump_json(index))
+        malformed = bundle((self.root / "index.json").read_bytes())
+        malformed["extra"] = 1  # passes the shape check, cosign rejects it
+        (self.root / "index.json.bundle").write_bytes(encode(malformed))
+        self.commit("a malformed index bundle")
+        self.assertIsNone(rs.bundle_problem(encode(malformed), (self.root / "index.json").read_bytes()))
+        problems = self.problems({})
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("index.json.bundle: cosign verify-blob failed: Error: bundle does not contain cert", problems[0])
+        (self.root / "index.json").write_bytes(good_index)
+        (self.root / "index.json.bundle").write_bytes(good_bundle)
+        self.commit("restore the signed index")
+        self.assertEqual(self.problems({}), [])
+        self.assertEqual(rs.find_anchor(self.root, self.cosign).index_version, 18)
+        self.release("2026-10-27T00:00:00Z")
+
+    def test_cosign_that_fails_its_health_check_aborts(self) -> None:
+        self.release()
+        os.environ["FAKE_COSIGN_BROKEN"] = "1"
+        self.addCleanup(os.environ.pop, "FAKE_COSIGN_BROKEN", None)
+        for name, call in {
+            "check": lambda: rs.check(self.root, {}, self.cosign),
+            "plan": lambda: rs.plan(self.root, {}, self.cosign),
+            "regenerate": lambda: rs.regenerate_index(self.root, rs.parse_time("2026-10-28T00:00:00Z"), {}, self.cosign),
+        }.items():
+            with self.subTest(name), self.assertRaisesRegex(rs.SigningError, "cosign health check failed"):
+                call()
+
+    def test_cosign_of_another_version_aborts(self) -> None:
+        self.release()
+        os.environ["FAKE_COSIGN_VERSION"] = "v3.1.4"
+        self.addCleanup(os.environ.pop, "FAKE_COSIGN_VERSION", None)
+        with self.assertRaisesRegex(rs.SigningError, "cosign v3.0.6 is required"):
+            rs.check(self.root, {}, self.cosign)
+
+    # P2: package names
+
+    def test_package_blobs_reads_non_ascii_paths(self) -> None:
+        (self.root / "packages" / "p\u00e4ck.json").write_bytes(b"{}\n")
+        self.commit("a non-ASCII file name")
+        head = git(self.root, "rev-parse", "HEAD").strip()
+        self.assertIn("packages/p\u00e4ck.json", rs.package_blobs(self.root, head))
+
+    def test_non_ascii_package_name_is_refused(self) -> None:
+        for name in ["p\u00e4ck", "Pkg", "-pkg", "pkg name"]:
+            with self.subTest(name):
+                write_package(self.root, name, [("1.0.0", "1", b"x")])
+                with self.assertRaisesRegex(rs.SigningError, "invalid package name"):
+                    rs.check(self.root, self.legacy(), self.cosign)
+                (self.root / "packages" / f"{name}.json").unlink()
+
     # F2: the legacy list is dead once an index is signed
 
     def test_legacy_entry_re_added_after_the_first_release_is_refused(self) -> None:
@@ -723,6 +782,9 @@ def fake_cosign_main(argv: list[str]) -> int:
     """sign-blob signs as FAKE_COSIGN_SUBJECT (default: the pinned subject); verify-blob
     accepts only a bundle whose signature binds the payload to the identity it is asked for."""
     command = argv[0]
+    if command == "version":
+        print(f"GitVersion:    {os.environ.get('FAKE_COSIGN_VERSION', 'v3.0.6')}")
+        return 0
     bundle_path = Path(argv[argv.index("--bundle") + 1])
     payload = Path(argv[-1]).read_bytes()
     if command == "sign-blob":
@@ -735,6 +797,19 @@ def fake_cosign_main(argv: list[str]) -> int:
             return 2
         subject = argv[argv.index("--certificate-identity") + 1]
         issuer = argv[argv.index("--certificate-oidc-issuer") + 1]
+        if os.environ.get("FAKE_COSIGN_BROKEN"):  # e.g. a stale trusted root: everything fails
+            print("Error: failed to verify certificate: unable to verify certificate chain", file=sys.stderr)
+            return 1
+        if payload == RealBundleTest.payload and bundle_path.read_bytes() == RealBundleTest.bundle:
+            return 0 if (subject, issuer) == (GORELEASER_SUBJECT, ISSUER) else 1
+        try:
+            data = json.loads(bundle_path.read_bytes())
+        except ValueError:
+            data = None
+        if isinstance(data, dict) and set(data) - {"mediaType", "verificationMaterial", "messageSignature"}:
+            # What cosign v3.0.6 prints for a bundle with an unknown top-level field.
+            print("Error: bundle does not contain cert for verification, please provide public key", file=sys.stderr)
+            return 1
         try:
             signature = json.loads(bundle_path.read_bytes())["messageSignature"]["signature"]
         except (ValueError, KeyError, TypeError):
