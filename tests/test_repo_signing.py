@@ -466,6 +466,53 @@ class RepoTest(unittest.TestCase):
         self.assertEqual(rs.plan(self.root, {}, self.cosign), [])
         self.release("2026-10-27T00:00:00Z")
 
+    def test_restored_index_bundle_beside_an_added_release_does_not_wedge(self) -> None:
+        self.release()
+        good_bundle = (self.root / "index.json.bundle").read_bytes()
+        (self.root / "index.json.bundle").unlink()
+        self.commit("delete the index bundle")
+        (self.root / "index.json.bundle").write_bytes(good_bundle)
+        new = self.publish("yurt_2", b"busybox 2")  # commits the restored bundle beside a new release
+        result = rs.check(self.root, {}, self.cosign)
+        self.assertEqual(result.problems, [])
+        self.assertEqual(rs.plan(self.root, {}, self.cosign), [new])
+        self.release("2026-10-27T00:00:00Z")
+
+    # R3-1: a cosign tool error aborts; only a verification failure drops a candidate
+
+    def test_cosign_tool_error_on_a_historical_index_aborts(self) -> None:
+        self.release()  # v18
+        v18 = hashlib.sha256((self.root / "index.json").read_bytes()).hexdigest()
+        self.release("2026-10-27T00:00:00Z")  # v19
+        os.environ["FAKE_COSIGN_TOOL_ERROR_FOR"] = v18
+        self.addCleanup(os.environ.pop, "FAKE_COSIGN_TOOL_ERROR_FOR", None)
+        for name, call in {
+            "check": lambda: rs.check(self.root, {}, self.cosign),
+            "plan": lambda: rs.plan(self.root, {}, self.cosign),
+            "regenerate": lambda: rs.regenerate_index(self.root, rs.parse_time("2026-10-28T00:00:00Z"), {}, self.cosign),
+        }.items():
+            with self.subTest(name), self.assertRaisesRegex(rs.SigningError, "cosign could not verify .*TUF remote mirror"):
+                call()
+        result = subprocess.run(
+            [sys.executable, str(TOOL), "--repo-root", str(self.root), "check", "--cosign", self.cosign],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("cosign could not verify", result.stderr)
+
+    def test_cosign_tool_error_on_a_current_bundle_aborts(self) -> None:
+        self.release()
+        os.environ["FAKE_COSIGN_TOOL_ERROR_FOR"] = self.sha(self.A)
+        self.addCleanup(os.environ.pop, "FAKE_COSIGN_TOOL_ERROR_FOR", None)
+        with self.assertRaisesRegex(rs.SigningError, "cosign could not verify"):
+            rs.check(self.root, {}, self.cosign)
+
+    def test_missing_cosign_aborts(self) -> None:
+        self.release()
+        with self.assertRaisesRegex(rs.SigningError, "cosign could not verify"):
+            rs.check(self.root, {}, str(self.root / "no-such-cosign"))
+
     # F2: the legacy list is dead once an index is signed
 
     def test_legacy_entry_re_added_after_the_first_release_is_refused(self) -> None:
@@ -541,7 +588,7 @@ class RepoTest(unittest.TestCase):
         self.assertIsNone(rs.bundle_problem((self.root / f"{self.A}.bundle").read_bytes(), (self.root / self.A).read_bytes()))
         problems = self.problems({})
         self.assertEqual(len(problems), 1)
-        self.assertIn("cosign verify-blob failed: Error: identity mismatch", problems[0])
+        self.assertIn("cosign verify-blob failed: Error: failed to verify signature: identity mismatch", problems[0])
 
     def test_a_forged_index_bundle_in_history_is_not_an_anchor(self) -> None:
         index = json.loads((self.root / "index.json").read_bytes())
@@ -683,6 +730,9 @@ def fake_cosign_main(argv: list[str]) -> int:
         bundle_path.write_bytes(encode(bundle(payload, signer=signer)))
         return 0
     if command == "verify-blob":
+        if hashlib.sha256(payload).hexdigest() in os.environ.get("FAKE_COSIGN_TOOL_ERROR_FOR", "").split():
+            print("Error: updating local metadata and targets: error updating to TUF remote mirror: timeout", file=sys.stderr)
+            return 2
         subject = argv[argv.index("--certificate-identity") + 1]
         issuer = argv[argv.index("--certificate-oidc-issuer") + 1]
         try:
@@ -691,7 +741,8 @@ def fake_cosign_main(argv: list[str]) -> int:
             print("Error: bundle does not parse", file=sys.stderr)
             return 1
         if signature != fake_signature(payload, subject, issuer):
-            print("Error: identity mismatch or bad signature", file=sys.stderr)
+            # cosign v3.0.6 reports every verification failure as "Error: failed to verify ..."
+            print("Error: failed to verify signature: identity mismatch or bad signature", file=sys.stderr)
             return 1
         return 0
     return 2
