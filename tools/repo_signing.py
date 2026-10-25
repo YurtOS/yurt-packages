@@ -15,11 +15,12 @@ digest and the certificate identity. With `--cosign` it also runs a full
 bundle.
 
 What may be signed is anchored in git history (a full clone is required):
-the anchor is the validly signed index.json with the highest index_version
-that any commit holds. Every release (name, version, build) that the anchor's
-package files list was signed then; its record must not change and its bundle
-must stay valid. Only releases the anchor does not list may be unsigned
-("pending") and get signed. Before any index was signed (the first run),
+every commit on any line of history that holds a validly signed index.json.
+The current index must not have a lower index_version than any of them.
+Every release (name, version, build) that any of them ever listed was signed;
+its record must not change, its url must not move to another release, and its
+bundle must stay valid. Only releases no signed index ever listed may be
+unsigned ("pending") and get signed. Before any index was signed (the first run),
 the legacy list names the 12 archives committed with placeholder bundles,
 each pinned to its sha256; once an anchor exists the list must be empty.
 
@@ -300,12 +301,17 @@ def git(root: Path, *args: str) -> bytes | None:
 
 @dataclass
 class Anchor:
-    """The signed index with the highest index_version in history."""
+    """Everything any signed index in history ever covered.
 
-    commit: str
-    index_version: int
-    index: bytes
-    releases: dict[tuple[str, str, str], tuple[str, str, int]]  # key -> (url, sha256, size)
+    A candidate is every commit, on any line of history (--full-history, so a
+    merge cannot hide one), that holds an index.json and an index.json.bundle
+    that verify (with --cosign, by cosign verify-blob too).
+    """
+
+    index_version: int  # the highest signed index_version
+    index: bytes  # the signed index.json with that version
+    releases: dict[tuple[str, str, str], set[tuple[str, str, int]]]  # key -> signed (url, sha256, size)
+    urls: dict[str, tuple[str, str, str]]  # signed archive url -> key
 
 
 def find_anchor(root: Path, cosign: str | None = None) -> Anchor | None:
@@ -313,37 +319,40 @@ def find_anchor(root: Path, cosign: str | None = None) -> Anchor | None:
         raise SigningError("not a git checkout: the signed history is needed")
     if git(root, "rev-parse", "--is-shallow-repository") != b"false\n":
         raise SigningError("shallow clone: the signed history is needed (fetch-depth: 0)")
-    log = git(root, "log", "--format=%H", "HEAD", "--", f"{INDEX}.bundle")
+    log = git(root, "log", "--full-history", "--format=%H", "HEAD", "--", INDEX, f"{INDEX}.bundle")
     if log is None:
         return None  # no commit yet
-    candidates = []
-    for order, commit in enumerate(log.decode().split()):
+    anchor = None
+    verified: dict[tuple[bytes, bytes], bool] = {}
+    for commit in log.decode().split():
         bundle = git(root, "show", f"{commit}:{INDEX}.bundle")
         index = git(root, "show", f"{commit}:{INDEX}")
-        if bundle is None or index is None or bundle_problem(bundle, index) is not None:
+        if bundle is None or index is None:
+            continue
+        pair = (hashlib.sha256(index).digest(), hashlib.sha256(bundle).digest())
+        if pair not in verified:
+            verified[pair] = verify(bundle, index, cosign) is None
+        if not verified[pair]:
             continue
         try:
-            version = int(json.loads(index)["index_version"])
+            parsed = json.loads(index)
+            version = int(parsed["index_version"])
+            pinned = parsed["packages"]
         except (ValueError, KeyError, TypeError):
             continue
-        candidates.append((-version, order, commit, bundle, index))
-    for _, _, commit, bundle, index in sorted(candidates):
-        # Highest version first; with cosign, a forged bundle is skipped.
-        if cosign and cosign_bytes_problem(cosign, bundle, index) is not None:
-            continue
-        return Anchor(commit, json.loads(index)["index_version"], index, anchor_releases(root, commit, index))
-    return None
-
-
-def anchor_releases(root: Path, commit: str, index: bytes) -> dict[tuple[str, str, str], tuple[str, str, int]]:
-    releases = {}
-    for name, entry in json.loads(index)["packages"].items():
-        data = git(root, "show", f"{commit}:packages/{name}.json")
-        if data is None or hashlib.sha256(data).hexdigest() != entry["sha256"] or len(data) != entry["size"]:
-            raise SigningError(f"signed index at {commit[:12]} pins packages/{name}.json, which that commit does not hold")
-        for version in json.loads(data)["versions"]:
-            releases[(name, version["version"], version["build"])] = (version["url"], version["sha256"], version["size"])
-    return releases
+        if anchor is None:
+            anchor = Anchor(version, index, {}, {})
+        elif version > anchor.index_version:
+            anchor.index_version, anchor.index = version, index
+        for name, entry in pinned.items():
+            data = git(root, "show", f"{commit}:packages/{name}.json")
+            if data is None or hashlib.sha256(data).hexdigest() != entry.get("sha256") or len(data) != entry.get("size"):
+                continue  # this commit re-holds the index beside other metadata; the one that signed it holds it
+            for release in json.loads(data)["versions"]:
+                key = (name, release["version"], release["build"])
+                anchor.releases.setdefault(key, set()).add((release["url"], release["sha256"], release["size"]))
+                anchor.urls.setdefault(release["url"], key)
+    return anchor
 
 
 def committed_bundles(root: Path) -> list[str]:
@@ -420,15 +429,15 @@ def check(root: Path, legacy: dict[str, str], cosign: str | None = None) -> Chec
                 )
 
     # archives
-    signed_urls = {url: key for key, (url, _, _) in (anchor.releases.items() if anchor else [])}
+    signed_urls = anchor.urls if anchor else {}
     for archive in archives:
         bundle_rel = f"{archive.path}.bundle"
         bundle = root / bundle_rel
         previously_signed = anchor is not None and archive.key in anchor.releases
-        if previously_signed and anchor.releases[archive.key] != (archive.path, archive.sha256, archive.size):
+        if previously_signed and (archive.path, archive.sha256, archive.size) not in anchor.releases[archive.key]:
             problems.append(f"{archive.path}: {archive.key} changed after it was signed; publish a new build")
             continue
-        if not previously_signed and archive.path in signed_urls:
+        if signed_urls.get(archive.path, archive.key) != archive.key:
             problems.append(f"{archive.path}: already signed as {signed_urls[archive.path]}")
             continue
         if bundle.is_symlink():

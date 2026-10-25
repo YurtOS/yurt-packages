@@ -52,12 +52,22 @@ over the raw file bytes, the format the `pkg` verifier reads.
 
 Trust in that identity is trust in write access to `main`: `Release` signs
 what `main` holds. `tools/repo_signing.py` limits that to releases nobody signed
-before. It anchors on the signed index in git history, meaning the validly signed
-`index.json` with the highest `index_version` that any commit holds (so CI and
-`Release` check out the full history). Every release (name, version, build) that
-the anchor's package files list was signed then. Its record must never change,
-its bundle must stay valid, and it is never signed again. Only releases the
-anchor does not list may be unsigned ("pending"), and only those get signed.
+before. It reads every commit, on any line of history, that holds a validly
+signed `index.json` (so CI and `Release` check out the full history):
+
+- the current index may not have a lower `index_version` than any of them;
+- every release (name, version, build) any of them ever listed was signed. Its
+  record must never change, its url must not move to another release, its
+  bundle must stay valid, and it is never signed again, even after it was
+  dropped from the metadata and re-added;
+- only releases no signed index ever listed may be unsigned ("pending"), and
+  only those get signed.
+
+That history is the anchor, so protect `main` against force-pushes and
+deletion (a branch protection rule or ruleset that still lets
+`github-actions[bot]` push): a force-pushed or orphan `main` drops the signed
+history, and with it the rollback and re-sign protection for the next run.
+Clients still refuse an `index_version` below the one they cached.
 
 Each run:
 
@@ -82,6 +92,14 @@ It runs when a `Publish Package` run on `main` succeeds, by manual dispatch on
 `main`, and weekly (Mondays 05:17 UTC). The weekly run renews `expires_at`:
 every client rejects an index more than 37 days old. It has its own concurrency
 group, `release`.
+
+GitHub disables scheduled workflows in a public repository "when no repository
+activity has occurred in 60 days"
+([docs](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/disable-and-enable-workflows)).
+The docs do not define activity or say whether the commits `Release` pushes
+itself count, so don't rely on them. If the repository has been quiet, check
+`gh workflow view release.yml` and run `gh workflow enable release.yml`. A
+disabled schedule lets the index expire.
 
 CI (`bundles` job) runs `tools/repo_signing.py check` with `cosign verify-blob`
 on every pull request and push. Every committed bundle must be valid. The only

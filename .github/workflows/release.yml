@@ -10,11 +10,11 @@ name: Release
 # so the file name, and running on refs/heads/main only, are part of the
 # client contract. Trust in that identity is trust in write access to main:
 # whatever main holds when this runs gets signed. tools/repo_signing.py limits
-# what that can be: releases (name, version, build) the last signed index did
-# not list, never a re-sign of one it did. Each run regenerates index.json (index_version + 1, fresh
-# generated_at, expires_at 7 days later), signs it, signs every published
-# archive whose bundle is missing or the old placeholder, checks every bundle
-# with cosign verify-blob, and commits the result to main.
+# what that can be: releases (name, version, build) that no signed index in
+# history ever listed, never a re-sign of one that one did. Each run plans the
+# archives to sign, regenerates index.json (index_version above every signed
+# one, fresh generated_at, expires_at 7 days later), signs the archives and the
+# index, checks every bundle with cosign verify-blob, and commits to main.
 #
 # Triggers: a manual dispatch on main; the end of each successful Publish
 # Package run on main (that workflow commits the archive and its package
