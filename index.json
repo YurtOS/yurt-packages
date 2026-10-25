@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "index_version": 17,
-  "generated_at": "2026-09-22T06:12:06Z",
-  "expires_at": "2026-09-29T06:12:06Z",
+  "index_version": 18,
+  "generated_at": "2026-10-25T20:05:57Z",
+  "expires_at": "2026-11-01T20:05:57Z",
   "packages": {
     "busybox": {
       "sha256": "dfd846304721d4d0a51d88c0e4bf48e88260dfca709f1a47496901b25da1fefe",
