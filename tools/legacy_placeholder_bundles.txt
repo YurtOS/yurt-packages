@@ -1,17 +1,17 @@
-# Bundles committed before release.yml existed: the literal placeholder text
-# "local test fixture bundle", or no bundle at all. `repo_signing.py check`
-# accepts these paths unsigned; every other bundle must be valid. release.yml
-# signs them and removes each signed entry. Never add an entry.
-artifacts/busybox/1.37.0/busybox-1.37.0-yurt_0.yurtpkg.bundle
-artifacts/clang/23.0.0/clang-23.0.0-yurt_0.yurtpkg.bundle
-artifacts/libcxx/22.1.0/libcxx-22.1.0-1.yurtpkg.bundle
-artifacts/ncurses/6.5.0/ncurses-6.5.0-yurt_0.yurtpkg.bundle
-artifacts/openssl/4.0.0/openssl-4.0.0-1.yurtpkg.bundle
-artifacts/pkg/0.1.0/pkg-0.1.0-yurt_0.yurtpkg.bundle
-artifacts/pkg/0.1.1/pkg-0.1.1-1.yurtpkg.bundle
-artifacts/pkg/0.1.1/pkg-0.1.1-2.yurtpkg.bundle
-artifacts/yurt-greet/0.1.0/yurt-greet-0.1.0-yurt_0.yurtpkg.bundle
-artifacts/zlib/1.3.1/zlib-1.3.1-1.yurtpkg.bundle
-artifacts/zsh/5.9.0/zsh-5.9.0-yurt_0.yurtpkg.bundle
-artifacts/zsh/5.9.0/zsh-5.9.0-yurt_1.yurtpkg.bundle
-index.json.bundle
+# Archives committed before release.yml existed, with the placeholder text
+# "local test fixture bundle" or no bundle at all, each pinned to the sha256 of
+# the archive it may sign. Valid only until the first signed index.json: then
+# `repo_signing.py check` requires this list to be empty. release.yml signs these
+# archives and removes each signed entry. Never add an entry.
+artifacts/busybox/1.37.0/busybox-1.37.0-yurt_0.yurtpkg.bundle 41cfd7e93bdcfc3b05f8af4d319f2eac2c253d3b7d49765163dd71945674b2dd
+artifacts/clang/23.0.0/clang-23.0.0-yurt_0.yurtpkg.bundle 0b41781e6bd9ed229872cfee2270c8c599603a86eeec466fefc381446825dc4f
+artifacts/libcxx/22.1.0/libcxx-22.1.0-1.yurtpkg.bundle b42d1d58e20c3f425e88699e8d1e549f1afe74477b72873c053789180b167df9
+artifacts/ncurses/6.5.0/ncurses-6.5.0-yurt_0.yurtpkg.bundle 533a73fc3cbadde2107d0d7f62d984e14885c33ac232867e9b956ea3aeda1026
+artifacts/openssl/4.0.0/openssl-4.0.0-1.yurtpkg.bundle 0a36496180d78739bff7dedf4efce526063a620fbdaed06ab4a2ef5f3b1c9894
+artifacts/pkg/0.1.0/pkg-0.1.0-yurt_0.yurtpkg.bundle 5b02418555dc098fd44ecc7af56a8f97d637636ec23590ce5129f1c26fccff7b
+artifacts/pkg/0.1.1/pkg-0.1.1-1.yurtpkg.bundle b9138e31040c635d09fc81d0c6a54d92a26fdb88d94669c8289d1068f514bf1d
+artifacts/pkg/0.1.1/pkg-0.1.1-2.yurtpkg.bundle 625b0e0c07ea5139def5da239d3d8219485f7f8db34031ca839b66f596bfcc6f
+artifacts/yurt-greet/0.1.0/yurt-greet-0.1.0-yurt_0.yurtpkg.bundle c8845ff2fceef34bde0d261653719995c700477cbf602f903d80e1ed879dd7a2
+artifacts/zlib/1.3.1/zlib-1.3.1-1.yurtpkg.bundle a26bb9aa98fc6e09b4dc280a2f32882b0d8aa4e695b823c60addf01028cbdf40
+artifacts/zsh/5.9.0/zsh-5.9.0-yurt_0.yurtpkg.bundle 6923f054c8fe35a0bbcbe15f26fa8179b10d83e5d1a985180804c01b2c67560d
+artifacts/zsh/5.9.0/zsh-5.9.0-yurt_1.yurtpkg.bundle 61674b3f4a9a933d20030396b428fe1201ff3236e4de933e524d725acce2d578

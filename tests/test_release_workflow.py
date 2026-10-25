@@ -41,11 +41,14 @@ class ReleaseWorkflowTest(unittest.TestCase):
 
     def test_triggers(self) -> None:
         on = self.wf[True]  # PyYAML reads `on:` as True
-        self.assertEqual(set(on), {"workflow_dispatch", "workflow_run"})
-        self.assertIsNone(on["workflow_dispatch"])
         self.assertEqual(
-            on["workflow_run"],
-            {"workflows": ["Publish Package"], "types": ["completed"], "branches": ["main"]},
+            on,
+            {
+                "workflow_dispatch": None,
+                "workflow_run": {"workflows": ["Publish Package"], "types": ["completed"], "branches": ["main"]},
+                # Weekly: the index expires 7 days after signing, and clients reject it 30 days later.
+                "schedule": [{"cron": "17 5 * * 1"}],
+            },
         )
         names = {load(path)["name"] for path in WORKFLOWS.glob("*.yml")}
         self.assertIn("Publish Package", names)
@@ -57,11 +60,13 @@ class ReleaseWorkflowTest(unittest.TestCase):
             "github.ref == 'refs/heads/main'",
             "github.event.workflow_run.conclusion == 'success'",
             "github.event.workflow_run.head_branch == 'main'",
+            "github.event.workflow_run.head_repository.full_name == 'YurtOS/yurt-packages'",
+            "github.event_name == 'schedule'",
         ]:
             self.assertIn(clause, condition)
         checkout = self.steps[0]
         self.assertTrue(checkout["uses"].startswith("actions/checkout@"))
-        self.assertEqual(checkout["with"], {"ref": "main"})
+        self.assertEqual(checkout["with"], {"ref": "main", "fetch-depth": 0})
 
     def test_minimum_permissions(self) -> None:
         self.assertEqual(self.wf["permissions"], {})
@@ -80,15 +85,32 @@ class ReleaseWorkflowTest(unittest.TestCase):
         installer = next(step for step in self.steps if step.get("uses", "").startswith("sigstore/cosign-installer@"))
         self.assertRegex(installer["with"]["cosign-release"], r"^v\d+\.\d+\.\d+$")
 
-    def test_serialized_with_the_other_publishers(self) -> None:
-        self.assertEqual(self.wf["concurrency"], {"group": "publish-package", "cancel-in-progress": False})
+    def test_own_concurrency_group(self) -> None:
+        # Sharing publish-package's group would let a waiting Release replace a waiting publish.
+        self.assertEqual(self.wf["concurrency"], {"group": "release", "cancel-in-progress": False})
         self.assertEqual(load(PUBLISH)["concurrency"]["group"], "publish-package")
+
+    def test_push_refuses_a_main_that_moved_under_signed_paths(self) -> None:
+        text = self.run_text()
+        order = [
+            'echo "START=$(git rev-parse HEAD)"',
+            "git commit",
+            "git fetch origin main",
+            'git diff --name-only "$START" origin/main -- index.json \'*.bundle\' packages artifacts',
+            "exit 1",
+            "git rebase origin/main",
+            "git push origin HEAD:main",
+        ]
+        tail = text[text.index("git commit") - 1 :]
+        self.assertIn(order[0], text)
+        positions = [tail.index(item) for item in order[1:]]
+        self.assertEqual(positions, sorted(positions))
 
     def test_step_order(self) -> None:
         text = self.run_text()
         order = [
-            "repo_signing.py regenerate-index",
-            "repo_signing.py plan",
+            "repo_signing.py plan --legacy tools/legacy_placeholder_bundles.txt",
+            "repo_signing.py regenerate-index --legacy tools/legacy_placeholder_bundles.txt",
             'cosign sign-blob --yes --bundle "${archive}.bundle" "$archive"',
             "cosign sign-blob --yes --bundle index.json.bundle index.json",
             "repo_signing.py check --strict --cosign cosign",
@@ -98,6 +120,11 @@ class ReleaseWorkflowTest(unittest.TestCase):
         positions = [text.index(item) for item in order]
         self.assertEqual(positions, sorted(positions))
 
+    def test_plan_and_regenerate_verify_with_cosign(self) -> None:
+        for command in ["repo_signing.py plan", "repo_signing.py regenerate-index"]:
+            step = next(step for step in self.steps if command in step.get("run", ""))
+            self.assertIn("--cosign cosign", step["run"])
+
     def test_strict_check_has_no_legacy_allowance(self) -> None:
         check = next(step for step in self.steps if "repo_signing.py check" in step.get("run", ""))
         self.assertNotIn("--legacy", check["run"])
@@ -106,6 +133,15 @@ class ReleaseWorkflowTest(unittest.TestCase):
     def test_no_expression_reaches_a_shell(self) -> None:
         for step in self.steps:
             self.assertNotIn("${{", step.get("run", ""), step.get("name"))
+
+
+class CiWorkflowTest(unittest.TestCase):
+    def test_checkouts_fetch_the_full_history(self) -> None:
+        # repo_signing.py anchors on the signed index in history and refuses a shallow clone.
+        jobs = load(WORKFLOWS / "ci.yml")["jobs"]
+        for name in ["rustup-dist-publish", "bundles"]:
+            checkout = next(step for step in jobs[name]["steps"] if step.get("uses", "").startswith("actions/checkout@"))
+            self.assertEqual(checkout.get("with", {}).get("fetch-depth"), 0, name)
 
 
 class PublishPackageHandoverTest(unittest.TestCase):

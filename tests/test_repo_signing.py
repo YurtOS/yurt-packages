@@ -79,8 +79,14 @@ def certificate(subject: str = SUBJECT, issuer: str | None = ISSUER, issuer_v1: 
     return builder.sign(key, hashes.SHA256()).public_bytes(serialization.Encoding.DER)
 
 
+def fake_signature(payload: bytes, subject: str = SUBJECT, issuer: str = ISSUER) -> str:
+    """What the fake cosign below signs and verifies: bound to the payload and the identity."""
+    return base64.b64encode(hashlib.sha256(f"fake-cosign|{subject}|{issuer}|".encode() + payload).digest()).decode()
+
+
 def bundle(payload: bytes, **overrides) -> dict:
     cert = overrides.pop("cert", None) or certificate()
+    signer = overrides.pop("signer", (SUBJECT, ISSUER))
     data = {
         "mediaType": rs.MEDIA_TYPE,
         "verificationMaterial": {
@@ -102,7 +108,7 @@ def bundle(payload: bytes, **overrides) -> dict:
                 "algorithm": "SHA2_256",
                 "digest": base64.b64encode(hashlib.sha256(payload).digest()).decode(),
             },
-            "signature": "MEUCIQ==",
+            "signature": fake_signature(payload, *signer),
         },
     }
     data.update(overrides)
@@ -206,74 +212,304 @@ def write_package(root: Path, name: str, versions: list[tuple[str, str, bytes]])
     (root / "packages" / f"{name}.json").write_bytes(rs.dump_json({"name": name, "versions": records}))
 
 
+def git(root: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+
+FAKE_COSIGN = None  # set in RepoTest.setUpClass
+
+
 class RepoTest(unittest.TestCase):
+    """A git repository shaped like yurt-packages main before the first Release run."""
+
+    A = "artifacts/busybox/1.37.0/busybox-1.37.0-yurt_0.yurtpkg"
+    B = "artifacts/busybox/1.37.0/busybox-1.37.0-yurt_1.yurtpkg"
+    C = "artifacts/zsh/5.9.0/zsh-5.9.0-yurt_0.yurtpkg"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.bin = tempfile.TemporaryDirectory()
+        script = Path(cls.bin.name, "cosign")
+        script.write_text(f"#!/bin/sh\nexec '{sys.executable}' '{Path(__file__).resolve()}' --fake-cosign \"$@\"\n")
+        script.chmod(0o755)
+        cls.cosign = str(script)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.bin.cleanup()
+
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
+        git(self.root, "init", "-q", "-b", "main")
         write_package(self.root, "zsh", [("5.9.0", "yurt_0", b"zsh archive")])
         write_package(self.root, "busybox", [("1.37.0", "yurt_0", b"busybox"), ("1.37.0", "yurt_1", b"busybox 1")])
-        (self.root / "index.json").write_bytes(
-            rs.dump_json(
-                {
-                    "schema": 1,
-                    "index_version": 17,
-                    "generated_at": "2026-09-22T06:12:06Z",
-                    "expires_at": "2026-09-29T06:12:06Z",
-                    "packages": {},
-                }
-            )
-        )
-        # An index that lists both packages as committed, like main after a release run.
-        index = json.loads((self.root / "index.json").read_bytes())
+        index = {
+            "schema": 1,
+            "index_version": 17,
+            "generated_at": "2026-09-22T06:12:06Z",
+            "expires_at": "2026-09-29T06:12:06Z",
+            "packages": {},
+        }
         for name in ["busybox", "zsh"]:
             data = (self.root / "packages" / f"{name}.json").read_bytes()
             index["packages"][name] = {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data), "url": f"packages/{name}.json"}
         (self.root / "index.json").write_bytes(rs.dump_json(index))
+        (self.root / "index.json.bundle").write_bytes(rs.PLACEHOLDER)
+        for rel in [self.A, self.B]:  # C has no bundle, like pkg-0.1.1-2 on main
+            (self.root / f"{rel}.bundle").write_bytes(rs.PLACEHOLDER)
+        self.legacy_path = self.root / "legacy.txt"
+        self.legacy_path.write_text(
+            "# header\n" + "".join(f"{rel}.bundle {self.sha(rel)}\n" for rel in [self.A, self.B, self.C])
+        )
+        self.commit("seed")
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def archives(self) -> list[str]:
-        return [
-            "artifacts/busybox/1.37.0/busybox-1.37.0-yurt_0.yurtpkg",
-            "artifacts/busybox/1.37.0/busybox-1.37.0-yurt_1.yurtpkg",
-            "artifacts/zsh/5.9.0/zsh-5.9.0-yurt_0.yurtpkg",
-        ]
+    def sha(self, rel: str) -> str:
+        return hashlib.sha256((self.root / rel).read_bytes()).hexdigest()
 
-    def sign(self, rel: str) -> None:
+    def commit(self, message: str) -> None:
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "--allow-empty", "-m", message)
+
+    def legacy(self) -> dict[str, str]:
+        return rs.read_legacy(self.legacy_path)
+
+    def sign(self, rel: str, signer: tuple[str, str] = (SUBJECT, ISSUER)) -> None:
         payload = (self.root / rel).read_bytes()
-        (self.root / f"{rel}.bundle").write_bytes(encode(bundle(payload)))
+        (self.root / f"{rel}.bundle").write_bytes(encode(bundle(payload, signer=signer)))
 
-    # regenerate-index
+    def release(self, now: str = "2026-10-26T00:00:00Z") -> None:
+        """What release.yml does, with the fake cosign."""
+        to_sign = rs.plan(self.root, self.legacy(), self.cosign)
+        rs.regenerate_index(self.root, rs.parse_time(now), self.legacy(), self.cosign)
+        for rel in to_sign:
+            self.sign(rel)
+        self.sign("index.json")
+        result = rs.check(self.root, {}, self.cosign)
+        self.assertEqual(result.problems, [])
+        self.assertEqual((result.legacy, result.pending), (0, 0))
+        rs.prune_legacy(self.root, self.legacy_path)
+        self.commit("release")
 
-    def test_regenerate_index_bumps_version_and_times(self) -> None:
-        now = dt.datetime(2026, 10, 25, 12, 0, 0, tzinfo=dt.timezone.utc)
-        rs.regenerate_index(self.root, now)
-        raw = (self.root / "index.json").read_bytes()
-        index = json.loads(raw)
+    def publish(self, build: str, data: bytes) -> str:
+        """What Publish Package commits: the archive and its metadata, no bundle, no index."""
+        package = json.loads((self.root / "packages" / "busybox.json").read_bytes())
+        versions = [(v["version"], v["build"], (self.root / v["url"]).read_bytes()) for v in package["versions"]]
+        write_package(self.root, "busybox", versions + [("1.37.0", build, data)])
+        self.commit(f"publish busybox {build}")
+        return f"artifacts/busybox/1.37.0/busybox-1.37.0-{build}.yurtpkg"
+
+    def problems(self, legacy: dict[str, str] | None = None) -> list[str]:
+        return rs.check(self.root, self.legacy() if legacy is None else legacy, self.cosign).problems
+
+    # before the first signed index
+
+    def test_first_run_state_checks_clean(self) -> None:
+        result = rs.check(self.root, self.legacy(), self.cosign)
+        self.assertEqual(result.problems, [])
+        self.assertIsNone(result.anchor)
+        self.assertEqual((result.valid, result.legacy, result.pending), (0, 4, 0))
+        self.assertEqual(rs.plan(self.root, self.legacy(), self.cosign), [self.A, self.B, self.C])
+
+    def test_legacy_entry_is_pinned_to_its_archive_bytes(self) -> None:
+        (self.root / self.A).write_bytes(b"swapped")
+        write_package(self.root, "busybox", [("1.37.0", "yurt_0", b"swapped"), ("1.37.0", "yurt_1", b"busybox 1")])
+        self.commit("swap a legacy archive")
+        self.assertEqual(len(self.problems()), 1)
+        self.assertIn("the legacy entry pins sha256", self.problems()[0])
+        with self.assertRaisesRegex(rs.SigningError, "refusing to sign"):
+            rs.plan(self.root, self.legacy(), self.cosign)
+
+    def test_placeholder_needs_a_legacy_entry(self) -> None:
+        self.assertEqual(
+            self.problems({}),
+            [f"{self.A}.bundle: not a JSON Sigstore bundle", f"{self.B}.bundle: not a JSON Sigstore bundle"],
+        )
+
+    # the first release
+
+    def test_first_release_signs_everything_and_empties_the_legacy_list(self) -> None:
+        self.release()
+        self.assertEqual(self.legacy_path.read_text(), "# header\n")
+        result = rs.check(self.root, {}, self.cosign)
+        self.assertEqual(result.problems, [])
+        self.assertIsNotNone(result.anchor)
+        self.assertEqual(result.anchor.index_version, 18)
+        self.assertEqual((result.valid, result.legacy, result.pending), (4, 0, 0))
+        self.assertEqual(rs.plan(self.root, {}, self.cosign), [])
+
+    # F1: no re-sign of a release the signed index lists
+
+    def test_swapped_archive_with_updated_record_and_deleted_bundle_is_refused(self) -> None:
+        self.release()
+        (self.root / f"{self.A}.bundle").unlink()
+        write_package(self.root, "busybox", [("1.37.0", "yurt_0", b"evil"), ("1.37.0", "yurt_1", b"busybox 1")])
+        self.commit("swap busybox yurt_0")
+        problems = self.problems({})
+        self.assertEqual(len(problems), 1)
+        self.assertIn("changed after it was signed", problems[0])
+        with self.assertRaisesRegex(rs.SigningError, "refusing to sign"):
+            rs.plan(self.root, {}, self.cosign)
+        with self.assertRaisesRegex(rs.SigningError, "refusing to regenerate"):
+            rs.regenerate_index(self.root, rs.parse_time("2026-10-27T00:00:00Z"), {}, self.cosign)
+
+    def test_deleting_a_signed_bundle_is_refused(self) -> None:
+        self.release()
+        (self.root / f"{self.A}.bundle").unlink()
+        self.commit("delete a bundle")
+        self.assertEqual(self.problems({}), [f"{self.A}.bundle: deleted after ('busybox', '1.37.0', 'yurt_0') was signed"])
+        with self.assertRaises(rs.SigningError):
+            rs.plan(self.root, {}, self.cosign)
+
+    def test_moving_a_signed_archive_under_a_new_release_name_is_refused(self) -> None:
+        self.release()
+        package = json.loads((self.root / "packages" / "busybox.json").read_bytes())
+        package["versions"][0]["build"] = "yurt_9"  # same url, new key
+        (self.root / "packages" / "busybox.json").write_bytes(rs.dump_json(package))
+        (self.root / f"{self.A}.bundle").unlink()
+        self.commit("rename a release")
+        self.assertEqual(len(self.problems({})), 1)
+        self.assertIn("already signed as", self.problems({})[0])
+
+    def test_a_new_release_is_pending_and_gets_signed(self) -> None:
+        self.release()
+        new = self.publish("yurt_2", b"busybox 2")
+        result = rs.check(self.root, {}, self.cosign)
+        self.assertEqual(result.problems, [])
+        self.assertEqual((result.valid, result.pending), (4, 1))
+        self.assertEqual(rs.plan(self.root, {}, self.cosign), [new])
+        self.release("2026-10-27T00:00:00Z")
+        self.assertEqual(rs.check(self.root, {}, self.cosign).anchor.index_version, 19)
+        # Signed now, so a deleted bundle is refused.
+        (self.root / f"{new}.bundle").unlink()
+        self.assertIn("deleted after", self.problems({})[0])
+
+    def test_a_pending_placeholder_is_refused(self) -> None:
+        self.release()
+        new = self.publish("yurt_2", b"busybox 2")
+        (self.root / f"{new}.bundle").write_bytes(rs.PLACEHOLDER)
+        self.assertEqual(self.problems({}), [f"{new}.bundle: not a JSON Sigstore bundle"])
+
+    # F2: the legacy list is dead once an index is signed
+
+    def test_legacy_entry_re_added_after_the_first_release_is_refused(self) -> None:
+        self.release()
+        (self.root / f"{self.A}.bundle").write_bytes(rs.PLACEHOLDER)
+        self.legacy_path.write_text(f"# header\n{self.A}.bundle {self.sha(self.A)}\n")
+        self.commit("re-add a legacy entry")
+        problems = self.problems()
+        self.assertIn("legacy list must be empty once a signed index.json exists", problems)
+        with self.assertRaises(rs.SigningError):
+            rs.plan(self.root, self.legacy(), self.cosign)
+
+    def test_deleting_the_index_bundle_does_not_reopen_the_first_run(self) -> None:
+        self.release()
+        (self.root / "index.json.bundle").write_bytes(rs.PLACEHOLDER)
+        self.commit("placeholder index bundle")
+        self.assertEqual(self.problems({}), ["index.json.bundle: not a JSON Sigstore bundle"])
+        with self.assertRaisesRegex(rs.SigningError, "refusing to regenerate"):
+            rs.regenerate_index(self.root, rs.parse_time("2026-10-27T00:00:00Z"), {}, self.cosign)
+
+    # F3: regenerate-index starts from the signed index only
+
+    def test_regenerate_refuses_an_index_edited_after_signing(self) -> None:
+        self.release()
+        index = json.loads((self.root / "index.json").read_bytes())
+        index["index_version"] = 3
+        (self.root / "index.json").write_bytes(rs.dump_json(index))
+        self.commit("lower the index version")
+        with self.assertRaisesRegex(rs.SigningError, "message digest does not match"):
+            rs.regenerate_index(self.root, rs.parse_time("2026-10-27T00:00:00Z"), {}, self.cosign)
+
+    def test_restoring_an_older_signed_index_is_a_rollback(self) -> None:
+        self.release()
+        old_index = (self.root / "index.json").read_bytes()
+        old_bundle = (self.root / "index.json.bundle").read_bytes()
+        self.release("2026-10-27T00:00:00Z")
+        (self.root / "index.json").write_bytes(old_index)
+        (self.root / "index.json.bundle").write_bytes(old_bundle)
+        self.commit("restore index_version 18")
+        self.assertEqual(self.problems({}), ["index.json: index_version 18 rolls back the signed index_version 19"])
+        with self.assertRaises(rs.SigningError):
+            rs.regenerate_index(self.root, rs.parse_time("2026-10-28T00:00:00Z"), {}, self.cosign)
+
+    def test_regenerate_bumps_above_the_signed_version(self) -> None:
+        self.release()
+        index = rs.regenerate_index(self.root, rs.parse_time("2026-10-27T12:00:00Z"), {}, self.cosign)
+        self.assertEqual(index["index_version"], 19)
+        self.assertEqual(index["generated_at"], "2026-10-27T12:00:00Z")
+        self.assertEqual(index["expires_at"], "2026-11-03T12:00:00Z")
         self.assertEqual(list(index), ["schema", "index_version", "generated_at", "expires_at", "packages"])
-        self.assertEqual(index["index_version"], 18)
-        self.assertEqual(index["generated_at"], "2026-10-25T12:00:00Z")
-        self.assertEqual(index["expires_at"], "2026-11-01T12:00:00Z")
-        self.assertEqual(list(index["packages"]), ["busybox", "zsh"])
         package = (self.root / "packages" / "zsh.json").read_bytes()
         self.assertEqual(
             index["packages"]["zsh"],
             {"sha256": hashlib.sha256(package).hexdigest(), "size": len(package), "url": "packages/zsh.json"},
         )
-        self.assertTrue(raw.endswith(b"}\n"))
-        rs.regenerate_index(self.root, now + dt.timedelta(seconds=1))
-        self.assertEqual(json.loads((self.root / "index.json").read_bytes())["index_version"], 19)
 
-    def test_regenerate_index_refuses_time_that_does_not_advance(self) -> None:
+    def test_regenerate_refuses_time_that_does_not_advance(self) -> None:
         for now in ["2026-09-22T06:12:06Z", "2026-09-01T00:00:00Z"]:
             with self.subTest(now), self.assertRaises(rs.SigningError):
-                rs.regenerate_index(self.root, rs.parse_time(now))
+                rs.regenerate_index(self.root, rs.parse_time(now), self.legacy(), self.cosign)
 
-    def test_regenerate_index_refuses_a_record_that_does_not_match_its_archive(self) -> None:
-        (self.root / self.archives()[0]).write_bytes(b"replaced")
+    def test_regenerate_refuses_a_record_that_does_not_match_its_archive(self) -> None:
+        (self.root / self.B).write_bytes(b"replaced")
         with self.assertRaisesRegex(rs.SigningError, "does not match its package record"):
-            rs.regenerate_index(self.root, rs.parse_time("2026-10-25T00:00:00Z"))
+            rs.regenerate_index(self.root, rs.parse_time("2026-10-25T00:00:00Z"), self.legacy(), self.cosign)
+
+    # cosign: identity bound, and a forged anchor does not count
+
+    def test_cosign_rejects_a_bundle_from_another_identity(self) -> None:
+        self.release()
+        other = (SUBJECT.replace("refs/heads/main", "refs/heads/dev"), ISSUER)
+        self.sign(self.A, signer=other)  # right certificate shape, wrong signer
+        self.assertIsNone(rs.bundle_problem((self.root / f"{self.A}.bundle").read_bytes(), (self.root / self.A).read_bytes()))
+        problems = self.problems({})
+        self.assertEqual(len(problems), 1)
+        self.assertIn("cosign verify-blob failed: Error: identity mismatch", problems[0])
+
+    def test_a_forged_index_bundle_in_history_is_not_an_anchor(self) -> None:
+        index = json.loads((self.root / "index.json").read_bytes())
+        index["index_version"] = 1000
+        (self.root / "index.json").write_bytes(rs.dump_json(index))
+        self.sign("index.json", signer=("https://example.com/forger", ISSUER))
+        self.commit("forged index")
+        self.assertIsNotNone(rs.find_anchor(self.root))  # the shape alone accepts it
+        self.assertIsNone(rs.find_anchor(self.root, self.cosign))
+
+    def test_shallow_clone_is_refused(self) -> None:
+        self.release()
+        clone = self.root.parent / f"{self.root.name}-shallow"
+        subprocess.run(["git", "clone", "-q", "--depth", "1", f"file://{self.root}", str(clone)], check=True)
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(clone)]))
+        with self.assertRaisesRegex(rs.SigningError, "shallow clone"):
+            rs.check(clone, {}, self.cosign)
+
+    # other shape rules
+
+    def test_stray_bundles_and_unknown_legacy_entries(self) -> None:
+        (self.root / "artifacts" / "orphan.yurtpkg.bundle").write_bytes(rs.PLACEHOLDER)
+        legacy = {**self.legacy(), "artifacts/gone.yurtpkg.bundle": "0" * 64}
+        self.assertEqual(
+            self.problems(legacy),
+            [
+                "artifacts/orphan.yurtpkg.bundle: no index.json or published archive to sign",
+                "legacy entry artifacts/gone.yurtpkg.bundle: not a bundle path this repository expects",
+            ],
+        )
+
+    def test_a_symlinked_bundle_is_rejected(self) -> None:
+        self.release()
+        (self.root / f"{self.A}.bundle").unlink()
+        (self.root / f"{self.A}.bundle").symlink_to(self.root / "index.json.bundle")
+        self.assertEqual(self.problems({}), [f"{self.A}.bundle: is a symlink"])
 
     def test_published_archives_refuses_bad_records(self) -> None:
         package = self.root / "packages" / "zsh.json"
@@ -290,148 +526,26 @@ class RepoTest(unittest.TestCase):
                 with self.assertRaises(rs.SigningError):
                     rs.published_archives(self.root)
 
-    # plan
-
-    def test_plan_lists_missing_and_placeholder_bundles(self) -> None:
-        a, b, c = self.archives()
-        (self.root / f"{a}.bundle").write_bytes(rs.PLACEHOLDER)
-        self.sign(c)
-        self.assertEqual(rs.plan(self.root), [a, b])
-
-    def test_plan_refuses_to_re_sign_an_invalid_real_bundle(self) -> None:
-        a = self.archives()[0]
-        (self.root / f"{a}.bundle").write_bytes(encode(bundle(b"an older archive")))
-        with self.assertRaisesRegex(rs.SigningError, "refusing to re-sign"):
-            rs.plan(self.root)
-
-    # check
-
-    def sign_all(self) -> None:
-        for rel in self.archives() + ["index.json"]:
-            self.sign(rel)
-
-    def test_check_passes_when_everything_is_signed(self) -> None:
-        self.sign_all()
-        self.assertEqual(rs.check(self.root, set()), rs.CheckResult([], valid=4))
-
-    def test_check_rejects_a_placeholder_unless_it_is_legacy(self) -> None:
-        self.sign_all()
-        a = self.archives()[0]
-        (self.root / f"{a}.bundle").write_bytes(rs.PLACEHOLDER)
-        self.assertEqual(rs.check(self.root, set()).problems, [f"{a}.bundle: not a JSON Sigstore bundle"])
-        self.assertEqual(rs.check(self.root, {f"{a}.bundle"}), rs.CheckResult([], valid=3, legacy=1))
-
-    def test_legacy_allows_only_the_exact_placeholder_or_a_missing_file(self) -> None:
-        self.sign_all()
-        a = self.archives()[0]
-        (self.root / f"{a}.bundle").write_bytes(b"some other fixture\n")
-        self.assertEqual(len(rs.check(self.root, {f"{a}.bundle"}).problems), 1)
-        (self.root / f"{a}.bundle").unlink()
-        self.assertEqual(rs.check(self.root, {f"{a}.bundle"}), rs.CheckResult([], valid=3, legacy=1))
-        self.assertEqual(rs.check(self.root, set()).problems, [f"{a}.bundle: missing"])
-
-    def test_missing_bundle_is_allowed_only_for_a_package_the_index_does_not_list_yet(self) -> None:
-        self.sign_all()
-        # Publish Package adds busybox 1.37.0-yurt_2 and its metadata, and no bundle.
-        write_package(
-            self.root,
-            "busybox",
-            [("1.37.0", "yurt_0", b"busybox"), ("1.37.0", "yurt_1", b"busybox 1"), ("1.37.0", "yurt_2", b"busybox 2")],
-        )
-        self.assertEqual(rs.check(self.root, set()), rs.CheckResult([], valid=4, pending=1))
-        # A placeholder is never allowed, pending or not.
-        new = "artifacts/busybox/1.37.0/busybox-1.37.0-yurt_2.yurtpkg"
-        (self.root / f"{new}.bundle").write_bytes(rs.PLACEHOLDER)
-        self.assertEqual(rs.check(self.root, set()).problems, [f"{new}.bundle: not a JSON Sigstore bundle"])
-        (self.root / f"{new}.bundle").unlink()
-        # Once the index lists the package (re-signed), the archive needs its bundle.
-        rs.regenerate_index(self.root, rs.parse_time("2026-10-25T00:00:00Z"))
-        self.sign("index.json")
-        self.assertEqual(rs.check(self.root, set()).problems, [f"{new}.bundle: missing"])
-
-    def test_a_symlinked_bundle_is_rejected(self) -> None:
-        self.sign_all()
-        a = self.archives()[0]
-        (self.root / f"{a}.bundle").unlink()
-        (self.root / f"{a}.bundle").symlink_to(self.root / "index.json.bundle")
-        self.assertEqual(rs.check(self.root, {f"{a}.bundle"}).problems, [f"{a}.bundle: is a symlink"])
-
-    def test_check_rejects_an_unsigned_index(self) -> None:
-        self.sign_all()
-        (self.root / "index.json.bundle").write_bytes(rs.PLACEHOLDER)
-        self.assertEqual(rs.check(self.root, set()).problems, ["index.json.bundle: not a JSON Sigstore bundle"])
-
-    def test_check_rejects_an_index_changed_after_signing(self) -> None:
-        self.sign_all()
-        rs.regenerate_index(self.root, rs.parse_time("2026-10-25T00:00:00Z"))
-        self.assertEqual(rs.check(self.root, set()).problems, ["index.json.bundle: message digest does not match the payload"])
-
-    def test_check_rejects_stray_bundles_and_stale_legacy_entries(self) -> None:
-        self.sign_all()
-        (self.root / "artifacts" / "orphan.yurtpkg.bundle").write_bytes(rs.PLACEHOLDER)
-        self.assertEqual(
-            rs.check(self.root, {"artifacts/gone.yurtpkg.bundle"}).problems,
-            [
-                "artifacts/orphan.yurtpkg.bundle: no index.json or published archive to sign",
-                "legacy entry artifacts/gone.yurtpkg.bundle: not a bundle path this repository expects",
-            ],
-        )
-
-    def fake_cosign(self, exit_code: int) -> str:
-        script = self.root.parent / f"fake-cosign-{exit_code}-{os.getpid()}"
-        log = self.root.parent / f"fake-cosign-{os.getpid()}.log"
-        script.write_text(f"#!/bin/sh\necho \"$@\" >> '{log}'\necho 'bad signature' >&2\nexit {exit_code}\n")
-        script.chmod(script.stat().st_mode | stat.S_IXUSR)
-        self.addCleanup(lambda: script.unlink(missing_ok=True))
-        self.addCleanup(lambda: log.unlink(missing_ok=True))
-        self.cosign_log = log
-        return str(script)
-
-    def test_check_runs_cosign_with_the_pinned_identity(self) -> None:
-        self.sign_all()
-        self.assertEqual(rs.check(self.root, set(), self.fake_cosign(0)), rs.CheckResult([], valid=4))
-        calls = self.cosign_log.read_text().splitlines()
-        self.assertEqual(len(calls), 4)
-        self.assertIn(
-            f"verify-blob --bundle {self.root / 'index.json.bundle'} --certificate-identity {SUBJECT} "
-            f"--certificate-oidc-issuer {ISSUER} {self.root / 'index.json'}",
-            calls,
-        )
-
-    def test_check_fails_when_cosign_rejects(self) -> None:
-        self.sign_all()
-        result = rs.check(self.root, set(), self.fake_cosign(1))
-        self.assertEqual(len(result.problems), 4)
-        self.assertEqual(result.valid, 0)
-        self.assertIn("cosign verify-blob failed: bad signature", result.problems[0])
-
-    # prune-legacy
+    def test_legacy_file_format(self) -> None:
+        self.legacy_path.write_text(f"{self.A}.bundle\n")
+        with self.assertRaisesRegex(rs.SigningError, "expected '<bundle path> <archive sha256>'"):
+            self.legacy()
 
     def test_prune_keeps_the_header_and_drops_signed_entries(self) -> None:
-        a, b, c = self.archives()
-        legacy = self.root / "legacy.txt"
-        legacy.write_text(f"# header\n{a}.bundle\n{b}.bundle\nindex.json.bundle\n")
-        self.sign(a)
-        (self.root / f"{b}.bundle").write_bytes(rs.PLACEHOLDER)
-        self.assertEqual(rs.prune_legacy(self.root, legacy), [f"{b}.bundle", "index.json.bundle"])
-        self.assertEqual(legacy.read_text(), f"# header\n{b}.bundle\nindex.json.bundle\n")
-
-    # the CLI, end to end as release.yml drives it
-
-    def test_release_sequence(self) -> None:
-        cosign = self.root.parent / f"sign-cosign-{os.getpid()}"
-        helper = Path(__file__).resolve()
-        cosign.write_text(
-            "#!/bin/sh\n"
-            f"exec '{sys.executable}' '{helper}' --fake-cosign \"$@\"\n"
+        self.sign(self.A)
+        self.assertEqual(
+            rs.prune_legacy(self.root, self.legacy_path),
+            [f"{self.B}.bundle {self.sha(self.B)}", f"{self.C}.bundle {self.sha(self.C)}"],
         )
-        cosign.chmod(0o755)
-        self.addCleanup(lambda: cosign.unlink(missing_ok=True))
-        a, b, c = self.archives()
-        (self.root / f"{a}.bundle").write_bytes(rs.PLACEHOLDER)
-        self.sign(c)
-        legacy = self.root / "legacy.txt"
-        legacy.write_text(f"# header\n{a}.bundle\n{b}.bundle\nindex.json.bundle\n")
+        self.assertEqual(
+            self.legacy_path.read_text(),
+            f"# header\n{self.B}.bundle {self.sha(self.B)}\n{self.C}.bundle {self.sha(self.C)}\n",
+        )
+
+    # the CLI, end to end as release.yml drives it, with the identity-checking fake cosign
+
+    def test_release_sequence_through_the_cli(self) -> None:
+        legacy = str(self.legacy_path)
 
         def run(*args: str, code: int = 0) -> str:
             result = subprocess.run(
@@ -439,36 +553,29 @@ class RepoTest(unittest.TestCase):
                 capture_output=True,
                 text=True,
             )
-            self.assertEqual(result.returncode, code, result.stderr)
+            self.assertEqual(result.returncode, code, result.stdout + result.stderr)
             return result.stdout + result.stderr
 
-        self.assertIn(
-            "ok: 1 valid bundles, 3 legacy placeholders, 0 pending archives",
-            run("check", "--legacy", str(legacy), "--cosign", str(cosign)),
-        )
-        self.assertIn("3 legacy and 0 pending bundles are unsigned", run("check", "--strict", "--legacy", str(legacy), code=1))
-        self.assertIn("not a JSON Sigstore bundle", run("check", code=1))
-        run("regenerate-index", "--now", "2026-10-25T00:00:00Z")
-        to_sign = run("plan").split()
-        self.assertEqual(to_sign, [a, b])
+        self.assertIn("ok: 0 valid bundles, 4 legacy placeholders, 0 pending archives", run("check", "--legacy", legacy, "--cosign", self.cosign))
+        self.assertIn("4 legacy and 0 pending bundles are unsigned", run("check", "--strict", "--legacy", legacy, code=1))
+        to_sign = run("plan", "--legacy", legacy, "--cosign", self.cosign).split()
+        self.assertEqual(to_sign, [self.A, self.B, self.C])
+        run("regenerate-index", "--legacy", legacy, "--cosign", self.cosign, "--now", "2026-10-25T00:00:00Z")
         for rel in to_sign + ["index.json"]:
-            subprocess.run([str(cosign), "sign-blob", "--yes", "--bundle", str(self.root / f"{rel}.bundle"), str(self.root / rel)], check=True)
-        self.assertIn("ok: 4 valid bundles, 0 legacy placeholders, 0 pending archives", run("check", "--strict", "--cosign", str(cosign)))
-        run("prune-legacy", "--legacy", str(legacy))
-        self.assertEqual(legacy.read_text(), "# header\n")
-        self.assertEqual(rs.check(self.root, set()), rs.CheckResult([], valid=4))
-
-    def test_check_with_nothing_to_check_fails(self) -> None:
-        empty = self.root / "empty"
-        (empty / "packages").mkdir(parents=True)
-        (empty / "index.json").write_bytes(rs.dump_json({"schema": 1, "packages": {}}))
-        result = subprocess.run(
-            [sys.executable, str(TOOL), "--repo-root", str(empty), "check"],
-            capture_output=True,
-            text=True,
+            subprocess.run([self.cosign, "sign-blob", "--yes", "--bundle", str(self.root / f"{rel}.bundle"), str(self.root / rel)], check=True)
+        self.assertIn("ok: 4 valid bundles, 0 legacy placeholders, 0 pending archives", run("check", "--strict", "--cosign", self.cosign))
+        run("prune-legacy", "--legacy", legacy)
+        self.assertEqual(self.legacy_path.read_text(), "# header\n")
+        self.commit("release")
+        self.assertIn("ok: 4 valid bundles", run("check", "--legacy", legacy, "--cosign", self.cosign))
+        # A bundle signed by another identity passes the shape check but not cosign.
+        subprocess.run(
+            [self.cosign, "sign-blob", "--yes", "--bundle", str(self.root / f"{self.A}.bundle"), str(self.root / self.A)],
+            check=True,
+            env={**os.environ, "FAKE_COSIGN_SUBJECT": "https://example.com/other"},
         )
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("index.json.bundle: missing", result.stderr)
+        self.assertIn("ok: 4 valid bundles", run("check"))
+        self.assertIn("identity mismatch", run("check", "--cosign", self.cosign, code=1))
 
 
 class CommittedRepositoryTest(unittest.TestCase):
@@ -479,34 +586,45 @@ class CommittedRepositoryTest(unittest.TestCase):
         self.assertEqual(result.problems, [])
         self.assertGreater(result.valid + result.legacy + result.pending, 0)
 
-    def test_legacy_list_only_names_bundles_that_existed_before_release_yml(self) -> None:
+    def test_legacy_list_only_pins_archives_that_existed_before_release_yml(self) -> None:
         allowed = {
-            "index.json.bundle",
-            "artifacts/busybox/1.37.0/busybox-1.37.0-yurt_0.yurtpkg.bundle",
-            "artifacts/clang/23.0.0/clang-23.0.0-yurt_0.yurtpkg.bundle",
-            "artifacts/libcxx/22.1.0/libcxx-22.1.0-1.yurtpkg.bundle",
-            "artifacts/ncurses/6.5.0/ncurses-6.5.0-yurt_0.yurtpkg.bundle",
-            "artifacts/openssl/4.0.0/openssl-4.0.0-1.yurtpkg.bundle",
-            "artifacts/pkg/0.1.0/pkg-0.1.0-yurt_0.yurtpkg.bundle",
-            "artifacts/pkg/0.1.1/pkg-0.1.1-1.yurtpkg.bundle",
-            "artifacts/pkg/0.1.1/pkg-0.1.1-2.yurtpkg.bundle",
-            "artifacts/yurt-greet/0.1.0/yurt-greet-0.1.0-yurt_0.yurtpkg.bundle",
-            "artifacts/zlib/1.3.1/zlib-1.3.1-1.yurtpkg.bundle",
-            "artifacts/zsh/5.9.0/zsh-5.9.0-yurt_0.yurtpkg.bundle",
-            "artifacts/zsh/5.9.0/zsh-5.9.0-yurt_1.yurtpkg.bundle",
+            "artifacts/busybox/1.37.0/busybox-1.37.0-yurt_0.yurtpkg.bundle": "41cfd7e93bdcfc3b05f8af4d319f2eac2c253d3b7d49765163dd71945674b2dd",
+            "artifacts/clang/23.0.0/clang-23.0.0-yurt_0.yurtpkg.bundle": "0b41781e6bd9ed229872cfee2270c8c599603a86eeec466fefc381446825dc4f",
+            "artifacts/libcxx/22.1.0/libcxx-22.1.0-1.yurtpkg.bundle": "b42d1d58e20c3f425e88699e8d1e549f1afe74477b72873c053789180b167df9",
+            "artifacts/ncurses/6.5.0/ncurses-6.5.0-yurt_0.yurtpkg.bundle": "533a73fc3cbadde2107d0d7f62d984e14885c33ac232867e9b956ea3aeda1026",
+            "artifacts/openssl/4.0.0/openssl-4.0.0-1.yurtpkg.bundle": "0a36496180d78739bff7dedf4efce526063a620fbdaed06ab4a2ef5f3b1c9894",
+            "artifacts/pkg/0.1.0/pkg-0.1.0-yurt_0.yurtpkg.bundle": "5b02418555dc098fd44ecc7af56a8f97d637636ec23590ce5129f1c26fccff7b",
+            "artifacts/pkg/0.1.1/pkg-0.1.1-1.yurtpkg.bundle": "b9138e31040c635d09fc81d0c6a54d92a26fdb88d94669c8289d1068f514bf1d",
+            "artifacts/pkg/0.1.1/pkg-0.1.1-2.yurtpkg.bundle": "625b0e0c07ea5139def5da239d3d8219485f7f8db34031ca839b66f596bfcc6f",
+            "artifacts/yurt-greet/0.1.0/yurt-greet-0.1.0-yurt_0.yurtpkg.bundle": "c8845ff2fceef34bde0d261653719995c700477cbf602f903d80e1ed879dd7a2",
+            "artifacts/zlib/1.3.1/zlib-1.3.1-1.yurtpkg.bundle": "a26bb9aa98fc6e09b4dc280a2f32882b0d8aa4e695b823c60addf01028cbdf40",
+            "artifacts/zsh/5.9.0/zsh-5.9.0-yurt_0.yurtpkg.bundle": "6923f054c8fe35a0bbcbe15f26fa8179b10d83e5d1a985180804c01b2c67560d",
+            "artifacts/zsh/5.9.0/zsh-5.9.0-yurt_1.yurtpkg.bundle": "61674b3f4a9a933d20030396b428fe1201ff3236e4de933e524d725acce2d578",
         }
-        self.assertLessEqual(rs.read_legacy(LEGACY), allowed)
+        self.assertLessEqual(rs.read_legacy(LEGACY).items(), allowed.items())
 
 
 def fake_cosign_main(argv: list[str]) -> int:
-    """sign-blob writes a synthetic bundle; verify-blob accepts anything the shape check accepts."""
+    """sign-blob signs as FAKE_COSIGN_SUBJECT (default: the pinned subject); verify-blob
+    accepts only a bundle whose signature binds the payload to the identity it is asked for."""
     command = argv[0]
+    bundle_path = Path(argv[argv.index("--bundle") + 1])
+    payload = Path(argv[-1]).read_bytes()
     if command == "sign-blob":
-        bundle_path = Path(argv[argv.index("--bundle") + 1])
-        payload = Path(argv[-1]).read_bytes()
-        bundle_path.write_bytes(encode(bundle(payload)))
+        signer = (os.environ.get("FAKE_COSIGN_SUBJECT", SUBJECT), ISSUER)
+        bundle_path.write_bytes(encode(bundle(payload, signer=signer)))
         return 0
     if command == "verify-blob":
+        subject = argv[argv.index("--certificate-identity") + 1]
+        issuer = argv[argv.index("--certificate-oidc-issuer") + 1]
+        try:
+            signature = json.loads(bundle_path.read_bytes())["messageSignature"]["signature"]
+        except (ValueError, KeyError, TypeError):
+            print("Error: bundle does not parse", file=sys.stderr)
+            return 1
+        if signature != fake_signature(payload, subject, issuer):
+            print("Error: identity mismatch or bad signature", file=sys.stderr)
+            return 1
         return 0
     return 2
 

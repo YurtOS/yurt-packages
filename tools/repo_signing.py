@@ -116,7 +116,7 @@ def published_archives(root: Path) -> list[Archive]:
     return archives
 
 
-def regenerate_index(root: Path, now: dt.datetime) -> dict:
+def regenerate_index(root: Path, now: dt.datetime, legacy: dict[str, str] | None = None, cosign: str | None = None) -> dict:
     index_path = root / INDEX
     previous = json.loads(index_path.read_bytes())
     if previous.get("schema") != 1:
@@ -264,18 +264,26 @@ def committed_bundles(root: Path) -> list[str]:
     return sorted(found)
 
 
-def read_legacy(path: Path | None) -> set[str]:
+def read_legacy(path: Path | None) -> dict[str, str]:
     if path is None or not path.exists():
-        return set()
-    entries = set()
+        return {}
+    entries = {}
     for line in path.read_text().splitlines():
         line = line.split("#", 1)[0].strip()
-        if line:
-            entries.add(line)
+        if not line:
+            continue
+        fields = line.split()
+        if len(fields) != 2:
+            raise SigningError(f"legacy entry {line!r}: expected '<bundle path> <archive sha256>'")
+        entries[fields[0]] = fields[1]
     return entries
 
 
-def plan(root: Path) -> list[str]:
+def find_anchor(root: Path, cosign: str | None = None) -> None:
+    return None
+
+
+def plan(root: Path, legacy: dict[str, str] | None = None, cosign: str | None = None) -> list[str]:
     """Archives to sign: those whose bundle is missing or the placeholder.
 
     Any other invalid bundle is an error, never re-signed: it means the archive
@@ -321,9 +329,11 @@ class CheckResult:
     valid: int = 0
     legacy: int = 0  # placeholders or missing bundles the legacy list allows
     pending: int = 0  # missing bundles of archives the signed index does not list yet
+    anchor: None = None
 
 
-def check(root: Path, legacy: set[str], cosign: str | None = None) -> CheckResult:
+def check(root: Path, legacy: dict[str, str], cosign: str | None = None) -> CheckResult:
+    legacy = set(legacy)
     result = CheckResult([])
     problems = result.problems
     pending = pending_packages(root)
@@ -365,7 +375,8 @@ def check(root: Path, legacy: set[str], cosign: str | None = None) -> CheckResul
 
 def prune_legacy(root: Path, legacy_path: Path) -> list[str]:
     remaining = []
-    for entry in sorted(read_legacy(legacy_path)):
+    lines = legacy_path.read_text().splitlines()
+    for entry in sorted(line.split()[0] for line in lines if line.strip() and not line.startswith("#")):
         bundle = root / entry
         payload = root / entry.removesuffix(".bundle")
         if bundle.is_file() and payload.is_file() and bundle_problem(bundle.read_bytes(), payload.read_bytes()) is None:
