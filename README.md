@@ -21,15 +21,72 @@ repository builds those ports, publishes package artifacts, regenerates
 Publishing is owned by the manual `Publish Package` GitHub Actions workflow in
 this repository. The workflow checks out the source-light port from
 `YurtOS/yurt-ports`, builds the selected source repository, runs
-`yurt-repo-ci publish-local --reject-existing`, commits the generated metadata,
-and pushes the repository update. Re-publishing the same package
+`yurt-repo-ci publish-local --reject-existing`, commits the archive and its
+`packages/<name>.json`, and pushes. Re-publishing the same package
 `version`/`build` is expected to fail before repository files are modified.
+It never commits `index.json` or a bundle: `Release` does that (below).
 
 For local end-to-end loops, `yurt-repo-ci publish-local` is the CI stand-in. It
 copies a built `.yurtpkg` into `artifacts/`, regenerates package metadata and
 `index.json`, and writes placeholder bundles so `pkg --features test-fixtures`
 can exercise the same repository layout for both `update` and `install`.
-Real Sigstore bundle generation remains CI-owned.
+Those placeholders are never committed.
+
+## Signing
+
+`pkg` verifies `index.json` and every archive against a Sigstore bundle next to
+it (`<file>.bundle`), offline, with the public-good trusted root the image
+ships. Images pin the signer in `/etc/yurt-pkg/trusted-repos.toml`:
+
+```toml
+signing_subject = "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main"
+signing_issuer  = "https://token.actions.githubusercontent.com"
+```
+
+Only `.github/workflows/release.yml` (`Release`), running on `main`, can produce
+that identity. It signs keyless with the job's GitHub Actions OIDC token (a
+Fulcio certificate and a Rekor log entry) through `cosign sign-blob --bundle`,
+which writes a Sigstore bundle v0.3
+(`application/vnd.dev.sigstore.bundle.v0.3+json`) with a message signature
+over the raw file bytes, the format the `pkg` verifier reads. Each run:
+
+1. regenerates `index.json` from `packages/*.json`: `index_version` + 1,
+   `generated_at` now, `expires_at` 7 days later (clients accept an index
+   until 30 days past `expires_at`, and never one whose `index_version` is
+   not higher than the one they cached);
+2. signs every published archive whose bundle is missing or the old
+   placeholder (a real bundle that no longer matches is an error, never
+   re-signed);
+3. signs `index.json`;
+4. runs `tools/repo_signing.py check --strict --cosign cosign`, which runs
+   `cosign verify-blob` with the pinned identity on every bundle;
+5. drops the signed paths from `tools/legacy_placeholder_bundles.txt`, commits
+   and pushes to `main` with the job's `GITHUB_TOKEN`.
+
+It runs when a `Publish Package` run on `main` succeeds, and by manual dispatch
+on `main` (for example to renew `expires_at`: an index more than 37 days old is
+rejected by every client). It shares the `publish-package` concurrency group.
+
+CI (`bundles` job) runs `tools/repo_signing.py check` with `cosign verify-blob`
+on every pull request and push. Every committed bundle must be valid, except
+the paths in `tools/legacy_placeholder_bundles.txt` (the placeholders committed
+before `Release` existed; never add an entry) and the archives of a package
+whose metadata the signed index does not list yet (between a `Publish Package`
+commit and the `Release` run after it). Until `Release` re-signs it, `pkg update`
+can fail for a package whose `packages/<name>.json` a publish just changed:
+its hash no longer matches the signed index, and clients fail closed.
+
+The checker requires the Rekor v1 log entry (`hashedrekord` 0.0.1) that cosign
+v3.0.6 writes on public-good today. If Sigstore moves signing to Rekor v2,
+`Release` fails at its check: prove the new bundle against the `pkg` verifier
+before relaxing it.
+
+Setup: no secret. `Release` needs `contents: write` and `id-token: write` for
+its `GITHUB_TOKEN`, which the workflow requests itself; the repository or the
+organization must allow workflows to request them, and nothing (branch
+protection or a ruleset) may block `github-actions[bot]` pushing to `main`.
+A push made with `GITHUB_TOKEN` does not trigger other workflows, so CI does
+not run on `Release` commits; the strict check in `Release` stands in for it.
 
 ## Rustup dist
 

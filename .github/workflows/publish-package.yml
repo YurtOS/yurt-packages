@@ -206,6 +206,11 @@ jobs:
             --generated-at "$generated_at" \
             --reject-existing
 
+      # publish-local also rewrites index.json and writes placeholder
+      # bundles ("local test fixture bundle"). Only the archive and its
+      # package metadata are committed here. release.yml, which this run's
+      # completion triggers, regenerates and signs index.json and signs the
+      # new archive, so main never carries an unsigned index or a placeholder.
       - name: Commit repository update
         env:
           PACKAGE: ${{ inputs.package }}
@@ -214,7 +219,11 @@ jobs:
           set -euxo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add artifacts packages index.json index.json.bundle
+          git add -- artifacts packages ':(exclude)*.bundle'
+          if git diff --cached --name-only | grep -E '\.bundle$|^index\.json$'; then
+            echo "refusing to commit a bundle or index.json; release.yml writes those" >&2
+            exit 1
+          fi
           if git diff --cached --quiet; then
             echo "No package repository changes to commit."
             exit 0

@@ -1,0 +1,17 @@
+# Bundles committed before release.yml existed: the literal placeholder text
+# "local test fixture bundle", or no bundle at all. `repo_signing.py check`
+# accepts these paths unsigned; every other bundle must be valid. release.yml
+# signs them and removes each signed entry. Never add an entry.
+artifacts/busybox/1.37.0/busybox-1.37.0-yurt_0.yurtpkg.bundle
+artifacts/clang/23.0.0/clang-23.0.0-yurt_0.yurtpkg.bundle
+artifacts/libcxx/22.1.0/libcxx-22.1.0-1.yurtpkg.bundle
+artifacts/ncurses/6.5.0/ncurses-6.5.0-yurt_0.yurtpkg.bundle
+artifacts/openssl/4.0.0/openssl-4.0.0-1.yurtpkg.bundle
+artifacts/pkg/0.1.0/pkg-0.1.0-yurt_0.yurtpkg.bundle
+artifacts/pkg/0.1.1/pkg-0.1.1-1.yurtpkg.bundle
+artifacts/pkg/0.1.1/pkg-0.1.1-2.yurtpkg.bundle
+artifacts/yurt-greet/0.1.0/yurt-greet-0.1.0-yurt_0.yurtpkg.bundle
+artifacts/zlib/1.3.1/zlib-1.3.1-1.yurtpkg.bundle
+artifacts/zsh/5.9.0/zsh-5.9.0-yurt_0.yurtpkg.bundle
+artifacts/zsh/5.9.0/zsh-5.9.0-yurt_1.yurtpkg.bundle
+index.json.bundle

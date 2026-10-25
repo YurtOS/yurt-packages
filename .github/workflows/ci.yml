@@ -16,13 +16,32 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
-      - name: Install PyYAML (static workflow test)
-        run: python3 -m pip install pyyaml==6.0.2
+      - name: Install PyYAML (static workflow tests) and cryptography (bundle check tests)
+        run: python3 -m pip install pyyaml==6.0.2 cryptography==46.0.3
       - name: shellcheck
         run: shellcheck tools/publish_rustup_dist.sh
       # Runs test_publish_workflow.py (static checks of the five-job workflow; fails without
       # PyYAML), test_publish_rustup_dist.py (phases), test_rustup_dist_stage.py and
       # test_rustup_dist_stage_cli.py (validator); support_*.py are their shared fixtures.
       # The tooling smoke test in test_publish_workflow.py skips here: CI cannot read yurt-rust.
+      # test_repo_signing.py and test_release_workflow.py cover tools/repo_signing.py and
+      # release.yml.
       - name: Publication script and workflow tests
         run: python3 -m unittest discover -s tests -v
+
+  # Every committed bundle must be a valid Sigstore bundle from release.yml on main,
+  # checked by shape, payload digest and certificate identity, then by cosign verify-blob.
+  # Only the entries of tools/legacy_placeholder_bundles.txt may still be unsigned.
+  bundles:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - run: python3 -m pip install cryptography==46.0.3
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.0.6
+      - name: Check bundles
+        run: python3 tools/repo_signing.py check --legacy tools/legacy_placeholder_bundles.txt --cosign cosign
