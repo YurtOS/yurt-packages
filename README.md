@@ -88,11 +88,15 @@ Each run:
 3. signs the planned archives and `index.json`;
 4. runs `tools/repo_signing.py check --strict --cosign cosign`, which runs
    `cosign verify-blob` with the pinned identity on every bundle. Only a
-   cosign v3.0.6 that verifies the in-repo goreleaser fixture
-   (`tests/fixtures/sigstore/`) counts as healthy. After that, an exit 1 counts as
-   an invalid bundle (a malformed bundle in history is skipped). A failed health
-   check, a wrong version, any other exit, a timeout or a missing binary aborts
-   the run;
+   cosign must be v3.0.6, and once per run it must verify the in-repo goreleaser
+   fixture (`tests/fixtures/sigstore/`). That health check fetches the trusted
+   root over TUF into a fresh per-run `TUF_ROOT`. Every later verify runs offline
+   against that one `trusted_root.json` (`--trusted-root`). cosign exits 1 for
+   every error, so after the health check an exit 1 can only be about the bundle,
+   and it counts as invalid (a malformed bundle in history is skipped). A network
+   failure can only fail the health check. These abort the run: a failed health
+   check, no fetched `trusted_root.json`, a wrong version, a crash, a timeout or
+   a missing binary;
 5. drops the signed entries from `tools/legacy_placeholder_bundles.txt` and
    commits. It then fetches `main`: if another writer has changed the index, a
    bundle, `packages/` or `artifacts/` since the checkout, it fails (the next run

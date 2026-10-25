@@ -267,48 +267,74 @@ HEALTH_FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "fixtures" /
 HEALTH_SUBJECT = "https://github.com/goreleaser/goreleaser/.github/workflows/release.yml@refs/tags/v2.19.0"
 
 
-def _run_cosign(cosign: str, args: list[str]) -> subprocess.CompletedProcess:
+def _run_cosign(cosign: str, args: list[str], tuf_root: Path) -> subprocess.CompletedProcess:
     try:
-        return subprocess.run([cosign, *args], capture_output=True, text=True, timeout=300)
+        return subprocess.run(
+            [cosign, *args],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            env={**os.environ, "TUF_ROOT": str(tuf_root)},
+        )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise SigningError(f"cosign could not run: {error}") from error
 
 
-def _verify_blob(cosign: str, bundle: Path, payload: Path, subject: str) -> tuple[int, str]:
-    result = _run_cosign(
-        cosign,
-        ["verify-blob", "--bundle", str(bundle), "--certificate-identity", subject,
-         "--certificate-oidc-issuer", ISSUER, str(payload)],
-    )
-    return result.returncode, (result.stderr or result.stdout).strip()
+class Cosign:
+    """One run's cosign: health-checked once, then strictly offline.
+
+    The health check fetches the public-good trusted root over TUF into a
+    fresh per-run TUF_ROOT. Every verify-blob after that, the health check's
+    own second verify included, uses `--trusted-root` with that file and
+    never touches the network. So after the health check, an exit 1 can only
+    be about the bundle (cosign's CLI exits 1 for every error), and a network
+    failure can only abort the health check."""
+
+    def __init__(self, binary: str) -> None:
+        self.binary = binary
+        self._tmp = tempfile.TemporaryDirectory(prefix="cosign-tuf-")
+        self.tuf_root = Path(self._tmp.name)
+        self.trusted_root = self.tuf_root / "tuf-repo-cdn.sigstore.dev" / "targets" / "trusted_root.json"
+        self._health_check()
+
+    def run(self, args: list[str]) -> subprocess.CompletedProcess:
+        return _run_cosign(self.binary, args, self.tuf_root)
+
+    def verify_blob(self, bundle: Path, payload: Path, subject: str, offline: bool = True) -> tuple[int, str]:
+        args = ["verify-blob"]
+        if offline:
+            args += ["--new-bundle-format", "--trusted-root", str(self.trusted_root)]
+        args += ["--bundle", str(bundle), "--certificate-identity", subject, "--certificate-oidc-issuer", ISSUER, str(payload)]
+        result = self.run(args)
+        return result.returncode, (result.stderr or result.stdout).strip()
+
+    def _health_check(self) -> None:
+        version = self.run(["version"])
+        versions = [line.split()[-1] for line in version.stdout.splitlines() if line.startswith("GitVersion:")]
+        if version.returncode != 0 or versions != [COSIGN_VERSION]:
+            raise SigningError(f"cosign {COSIGN_VERSION} is required, got {versions or version.stdout.strip()!r}")
+        fixture = (
+            HEALTH_FIXTURE / "goreleaser-v2.19.0-checksums.txt.sigstore.json",
+            HEALTH_FIXTURE / "goreleaser-v2.19.0-checksums.txt",
+        )
+        code, output = self.verify_blob(*fixture, HEALTH_SUBJECT, offline=False)  # fetches the trusted root
+        if code != 0:
+            raise SigningError(f"cosign health check failed (it does not verify the goreleaser fixture, exit {code}): {output}")
+        if not self.trusted_root.is_file():
+            raise SigningError(f"cosign health check failed: it fetched no {self.trusted_root}")
+        code, output = self.verify_blob(*fixture, HEALTH_SUBJECT)
+        if code != 0:
+            raise SigningError(f"cosign health check failed against the fetched trusted_root.json (exit {code}): {output}")
 
 
-def cosign_health(cosign: str) -> None:
-    """Abort unless cosign is v3.0.6 and verifies the in-repo fixture bundle.
-
-    After this passes, an exit 1 from cosign verify-blob means the bundle is
-    invalid (malformed, wrong identity, bad signature or log proof), never
-    that cosign itself is broken. Run once per command (find_anchor)."""
-    version = _run_cosign(cosign, ["version"])
-    versions = [line.split()[-1] for line in version.stdout.splitlines() if line.startswith("GitVersion:")]
-    if version.returncode != 0 or versions != [COSIGN_VERSION]:
-        raise SigningError(f"cosign {COSIGN_VERSION} is required, got {versions or version.stdout.strip()!r}")
-    code, output = _verify_blob(
-        cosign,
-        HEALTH_FIXTURE / "goreleaser-v2.19.0-checksums.txt.sigstore.json",
-        HEALTH_FIXTURE / "goreleaser-v2.19.0-checksums.txt",
-        HEALTH_SUBJECT,
-    )
-    if code != 0:
-        raise SigningError(f"cosign health check failed (it does not verify the goreleaser fixture, exit {code}): {output}")
+def open_cosign(cosign: "str | Cosign | None") -> "Cosign | None":
+    return Cosign(cosign) if isinstance(cosign, str) else cosign
 
 
-def cosign_problem(cosign: str, bundle: Path, payload: Path) -> str | None:
-    """None if it verifies, the failure if cosign rejects it (exit 1).
-
-    Call only after cosign_health. Any other exit, a missing binary or a
-    timeout raises SigningError: it says nothing about the bundle."""
-    code, output = _verify_blob(cosign, bundle, payload, SUBJECT)
+def cosign_problem(cosign: Cosign, bundle: Path, payload: Path) -> str | None:
+    """None if it verifies, the failure if cosign rejects it (exit 1, after the
+    health check). Any other exit, a missing binary or a timeout raises."""
+    code, output = cosign.verify_blob(bundle, payload, SUBJECT)
     if code == 0:
         return None
     if code == 1:
@@ -316,7 +342,7 @@ def cosign_problem(cosign: str, bundle: Path, payload: Path) -> str | None:
     raise SigningError(f"cosign could not verify {bundle.name} (exit {code}): {output}")
 
 
-def cosign_bytes_problem(cosign: str, bundle: bytes, payload: bytes) -> str | None:
+def cosign_bytes_problem(cosign: Cosign, bundle: bytes, payload: bytes) -> str | None:
     with tempfile.TemporaryDirectory() as tmp:
         bundle_path = Path(tmp, "payload.bundle")
         payload_path = Path(tmp, "payload")
@@ -325,7 +351,7 @@ def cosign_bytes_problem(cosign: str, bundle: bytes, payload: bytes) -> str | No
         return cosign_problem(cosign, bundle_path, payload_path)
 
 
-def verify(bundle: bytes, payload: bytes, cosign: str | None) -> str | None:
+def verify(bundle: bytes, payload: bytes, cosign: Cosign | None) -> str | None:
     problem = bundle_problem(bundle, payload)
     if problem is None and cosign:
         problem = cosign_bytes_problem(cosign, bundle, payload)
@@ -352,13 +378,12 @@ class Anchor:
     urls: dict[str, tuple[str, str, str]]  # signed archive url -> key
 
 
-def find_anchor(root: Path, cosign: str | None = None) -> Anchor | None:
+def find_anchor(root: Path, cosign: "str | Cosign | None" = None) -> Anchor | None:
     if git(root, "rev-parse", "--is-inside-work-tree") is None:
         raise SigningError("not a git checkout: the signed history is needed")
     if git(root, "rev-parse", "--is-shallow-repository") != b"false\n":
         raise SigningError("shallow clone: the signed history is needed (fetch-depth: 0)")
-    if cosign:
-        cosign_health(cosign)
+    cosign = open_cosign(cosign)  # the health check, once per command
     log = git(root, "log", "--full-history", "--format=%H", "HEAD", "--", INDEX, f"{INDEX}.bundle")
     if log is None:
         return None  # no commit yet
@@ -398,10 +423,17 @@ def find_anchor(root: Path, cosign: str | None = None) -> Anchor | None:
             data = blob(blob_id) if blob_id else None
             if data is None or hashlib.sha256(data).hexdigest() != entry.get("sha256") or len(data) != entry.get("size"):
                 continue  # this commit re-holds the index beside other metadata; the one that signed it holds it
-            for release in json.loads(data)["versions"]:
-                key = (name, release["version"], release["build"])
-                anchor.releases.setdefault(key, set()).add((release["url"], release["sha256"], release["size"]))
-                anchor.urls.setdefault(release["url"], key)
+            try:
+                releases = [
+                    ((name, r["version"], r["build"]), (r["url"], r["sha256"], r["size"]))
+                    for r in json.loads(data)["versions"]
+                ]
+            except (ValueError, KeyError, TypeError) as error:
+                # Signed metadata that does not parse: fail closed, never drop its releases.
+                raise SigningError(f"packages/{name}.json signed at {commit[:12]} does not parse: {error!r}") from error
+            for key, record in releases:
+                anchor.releases.setdefault(key, set()).add(record)
+                anchor.urls.setdefault(record[0], key)
     return anchor
 
 
@@ -459,7 +491,8 @@ class CheckResult:
     index_signed: bool = False  # index.json.bundle is valid for index.json
 
 
-def check(root: Path, legacy: dict[str, str], cosign: str | None = None) -> CheckResult:
+def check(root: Path, legacy: dict[str, str], cosign: "str | Cosign | None" = None) -> CheckResult:
+    cosign = open_cosign(cosign)
     anchor = find_anchor(root, cosign)
     result = CheckResult([], anchor=anchor)
     problems = result.problems
