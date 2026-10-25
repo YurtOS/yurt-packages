@@ -480,32 +480,49 @@ class RepoTest(unittest.TestCase):
 
     # R3-1: a cosign tool error aborts; only a verification failure drops a candidate
 
-    def test_cosign_tool_error_on_a_historical_index_aborts(self) -> None:
-        self.release()  # v18
-        v18 = hashlib.sha256((self.root / "index.json").read_bytes()).hexdigest()
-        self.release("2026-10-27T00:00:00Z")  # v19
-        os.environ["FAKE_COSIGN_TOOL_ERROR_FOR"] = v18
-        self.addCleanup(os.environ.pop, "FAKE_COSIGN_TOOL_ERROR_FOR", None)
+    def test_network_failure_after_the_health_check_drops_no_signed_index(self) -> None:
+        # N1's sequence, with TUF unreachable after cosign's first online call.
+        self.release()
+        write_package(self.root, "busybox", [("1.37.0", "yurt_0", b"busybox")])
+        (self.root / self.B).unlink()
+        (self.root / f"{self.B}.bundle").unlink()
+        self.commit("drop busybox yurt_1")
+        self.release("2026-10-27T00:00:00Z")
+        write_package(self.root, "busybox", [("1.37.0", "yurt_0", b"busybox"), ("1.37.0", "yurt_1", b"other bytes")])
+        self.commit("re-add busybox yurt_1 with new bytes")
+        marker = self.root.parent / f"{self.root.name}-network-down"
+        os.environ["FAKE_COSIGN_NETWORK_DOWN_AFTER_FIRST"] = str(marker)
+        self.addCleanup(os.environ.pop, "FAKE_COSIGN_NETWORK_DOWN_AFTER_FIRST", None)
+        self.addCleanup(lambda: marker.unlink(missing_ok=True))
+        problems = self.problems({})
+        self.assertTrue(marker.exists())  # the network did go down after the first call
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("changed after it was signed", problems[0])
+
+    def test_network_failure_in_the_health_check_aborts(self) -> None:
+        self.release()
+        os.environ["FAKE_COSIGN_NETWORK_DOWN"] = "1"
+        self.addCleanup(os.environ.pop, "FAKE_COSIGN_NETWORK_DOWN", None)
         for name, call in {
             "check": lambda: rs.check(self.root, {}, self.cosign),
             "plan": lambda: rs.plan(self.root, {}, self.cosign),
             "regenerate": lambda: rs.regenerate_index(self.root, rs.parse_time("2026-10-28T00:00:00Z"), {}, self.cosign),
         }.items():
-            with self.subTest(name), self.assertRaisesRegex(rs.SigningError, "cosign could not verify .*TUF remote mirror"):
+            with self.subTest(name), self.assertRaisesRegex(rs.SigningError, "(?s)cosign health check failed.*trusted root is required"):
                 call()
-        result = subprocess.run(
-            [sys.executable, str(TOOL), "--repo-root", str(self.root), "check", "--cosign", self.cosign],
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("cosign could not verify", result.stderr)
 
-    def test_cosign_tool_error_on_a_current_bundle_aborts(self) -> None:
+    def test_health_check_without_a_fetched_trusted_root_aborts(self) -> None:
         self.release()
-        os.environ["FAKE_COSIGN_TOOL_ERROR_FOR"] = self.sha(self.A)
-        self.addCleanup(os.environ.pop, "FAKE_COSIGN_TOOL_ERROR_FOR", None)
-        with self.assertRaisesRegex(rs.SigningError, "cosign could not verify"):
+        os.environ["FAKE_COSIGN_NO_TRUSTED_ROOT"] = "1"
+        self.addCleanup(os.environ.pop, "FAKE_COSIGN_NO_TRUSTED_ROOT", None)
+        with self.assertRaisesRegex(rs.SigningError, "trusted_root.json"):
+            rs.check(self.root, {}, self.cosign)
+
+    def test_cosign_crash_on_a_current_bundle_aborts(self) -> None:
+        self.release()
+        os.environ["FAKE_COSIGN_CRASH_FOR"] = self.sha(self.A)
+        self.addCleanup(os.environ.pop, "FAKE_COSIGN_CRASH_FOR", None)
+        with self.assertRaisesRegex(rs.SigningError, "cosign could not verify .*panic"):
             rs.check(self.root, {}, self.cosign)
 
     def test_missing_cosign_aborts(self) -> None:
@@ -792,9 +809,30 @@ def fake_cosign_main(argv: list[str]) -> int:
         bundle_path.write_bytes(encode(bundle(payload, signer=signer)))
         return 0
     if command == "verify-blob":
-        if hashlib.sha256(payload).hexdigest() in os.environ.get("FAKE_COSIGN_TOOL_ERROR_FOR", "").split():
-            print("Error: updating local metadata and targets: error updating to TUF remote mirror: timeout", file=sys.stderr)
+        if hashlib.sha256(payload).hexdigest() in os.environ.get("FAKE_COSIGN_CRASH_FOR", "").split():
+            print("panic: runtime error: invalid memory address or nil pointer dereference", file=sys.stderr)
             return 2
+        if "--trusted-root" in argv:  # offline: verifies against this file only
+            if not Path(argv[argv.index("--trusted-root") + 1]).is_file():
+                print("Error: reading trusted root: no such file or directory", file=sys.stderr)
+                return 1
+        else:  # online: cosign refreshes its TUF repository first
+            marker = os.environ.get("FAKE_COSIGN_NETWORK_DOWN_AFTER_FIRST")
+            if os.environ.get("FAKE_COSIGN_NETWORK_DOWN") or (marker and Path(marker).exists()):
+                # What cosign v3.0.6 prints when TUF is unreachable.
+                print(
+                    "WARNING: Could not fetch trusted_root.json from the TUF repository. Continuing with individual targets.\n"
+                    "Error: trusted root is required when using new bundle format",
+                    file=sys.stderr,
+                )
+                return 1
+            if marker:
+                Path(marker).write_text("down from now on\n")
+            tuf_root = os.environ.get("TUF_ROOT")
+            if tuf_root and not os.environ.get("FAKE_COSIGN_NO_TRUSTED_ROOT"):
+                target = Path(tuf_root, "tuf-repo-cdn.sigstore.dev", "targets", "trusted_root.json")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text('{"fake": "trusted root"}\n')
         subject = argv[argv.index("--certificate-identity") + 1]
         issuer = argv[argv.index("--certificate-oidc-issuer") + 1]
         if os.environ.get("FAKE_COSIGN_BROKEN"):  # e.g. a stale trusted root: everything fails
