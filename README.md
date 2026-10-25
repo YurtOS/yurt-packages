@@ -21,15 +21,127 @@ repository builds those ports, publishes package artifacts, regenerates
 Publishing is owned by the manual `Publish Package` GitHub Actions workflow in
 this repository. The workflow checks out the source-light port from
 `YurtOS/yurt-ports`, builds the selected source repository, runs
-`yurt-repo-ci publish-local --reject-existing`, commits the generated metadata,
-and pushes the repository update. Re-publishing the same package
+`yurt-repo-ci publish-local --reject-existing`, commits the archive and its
+`packages/<name>.json`, and pushes. Re-publishing the same package
 `version`/`build` is expected to fail before repository files are modified.
+It never commits `index.json` or a bundle: `Release` does that (below).
 
 For local end-to-end loops, `yurt-repo-ci publish-local` is the CI stand-in. It
 copies a built `.yurtpkg` into `artifacts/`, regenerates package metadata and
 `index.json`, and writes placeholder bundles so `pkg --features test-fixtures`
 can exercise the same repository layout for both `update` and `install`.
-Real Sigstore bundle generation remains CI-owned.
+Those placeholders are never committed.
+
+## Signing
+
+`pkg` verifies `index.json` and every archive against a Sigstore bundle next to
+it (`<file>.bundle`), offline, with the public-good trusted root the image
+ships. Images pin the signer in `/etc/yurt-pkg/trusted-repos.toml`:
+
+```toml
+signing_subject = "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main"
+signing_issuer  = "https://token.actions.githubusercontent.com"
+```
+
+Only `.github/workflows/release.yml` (`Release`), running on `main`, can produce
+that identity. It signs keyless with the job's GitHub Actions OIDC token (a
+Fulcio certificate and a Rekor log entry) through `cosign sign-blob --bundle`,
+which writes a Sigstore bundle v0.3
+(`application/vnd.dev.sigstore.bundle.v0.3+json`) with a message signature
+over the raw file bytes, the format the `pkg` verifier reads.
+
+Trust in that identity is trust in write access to `main`: `Release` signs
+what `main` holds. `tools/repo_signing.py` limits that to releases nobody signed
+before. It reads every commit, on any line of history, that holds a validly
+signed `index.json` (so CI and `Release` check out the full history):
+
+- the current index may not have a lower `index_version` than any of them;
+- every release (name, version, build) any of them ever listed was signed. Its
+  record must never change, its url must not move to another release (moving
+  an archive means publishing a new build), its
+  bundle must stay valid, and it is never signed again, even after it was
+  dropped from the metadata and re-added;
+- only releases no signed index ever listed may be unsigned ("pending"), and
+  only those get signed.
+
+History bundles are verified against the current trusted root. If Sigstore
+retires a key from it, old bundles signed under that key stop verifying and drop
+out of the history, together with the protection of releases that only they
+listed. Any release a later signed index also listed keeps its protection.
+
+That history is the anchor, so protect `main` against force-pushes and
+deletion (a branch protection rule or ruleset that still lets
+`github-actions[bot]` push): a force-pushed or orphan `main` drops the signed
+history, and with it the rollback and re-sign protection for the next run.
+Clients still refuse an `index_version` below the one they cached.
+
+Each run:
+
+1. plans, on the committed tree, which archives to sign: pending releases, and
+   on the first run the legacy archives. Any check problem stops the run;
+2. regenerates `index.json` from `packages/*.json`. Before that, it verifies the
+   current `index.json` against its bundle with cosign; only before the first
+   signed index may that bundle be the placeholder. The new index gets
+   `index_version` above the anchor's, `generated_at` now, and `expires_at` 7
+   days later. Clients accept an index until 30 days past `expires_at`, and
+   never one whose `index_version` is not higher than the one they cached;
+3. signs the planned archives and `index.json`;
+4. runs `tools/repo_signing.py check --strict --cosign cosign`, which runs
+   `cosign verify-blob` with the pinned identity on every bundle. Only a
+   cosign must be v3.0.6, and once per run it must verify the in-repo goreleaser
+   fixture (`tests/fixtures/sigstore/`). That health check fetches the trusted
+   root over TUF into a fresh per-run `TUF_ROOT`. Every later verify runs offline
+   against that one `trusted_root.json` (`--trusted-root`). cosign exits 1 for
+   every error, so after the health check an exit 1 can only be about the bundle,
+   and it counts as invalid (a malformed bundle in history is skipped). A network
+   failure can only fail the health check. These abort the run: a failed health
+   check, no fetched `trusted_root.json`, a wrong version, a crash, a timeout or
+   a missing binary;
+5. drops the signed entries from `tools/legacy_placeholder_bundles.txt` and
+   commits. It then fetches `main`: if another writer has changed the index, a
+   bundle, `packages/` or `artifacts/` since the checkout, it fails (the next run
+   signs the new state). Otherwise it rebases and pushes with the job's
+   `GITHUB_TOKEN`.
+
+It runs when a `Publish Package` run on `main` succeeds, by manual dispatch on
+`main`, and weekly (Mondays 05:17 UTC). The weekly run renews `expires_at`:
+every client rejects an index more than 37 days old. It has its own concurrency
+group, `release`.
+
+GitHub disables scheduled workflows in a public repository "when no repository
+activity has occurred in 60 days"
+([docs](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/disable-and-enable-workflows)).
+The docs do not define activity or say whether the commits `Release` pushes
+itself count, so don't rely on them. If the repository has been quiet, check
+`gh workflow view release.yml` and run `gh workflow enable release.yml`. A
+disabled schedule lets the index expire.
+
+CI (`bundles` job) runs `tools/repo_signing.py check` with `cosign verify-blob`
+on every pull request and push. Every committed bundle must be valid. The only
+unsigned archives allowed are:
+
+- pending releases, between a `Publish Package` commit and the `Release` run
+  after it. A placeholder is never allowed;
+- before the first signed index only, the 12 archives in
+  `tools/legacy_placeholder_bundles.txt`. These were committed before `Release`
+  existed, and each is pinned to its sha256. Once a signed index exists, the
+  list must be empty. Never add an entry.
+
+Until `Release` re-signs, `pkg update` can fail for a package whose
+`packages/<name>.json` a publish just changed: its hash no longer matches the
+signed index, and clients fail closed.
+
+The checker requires the Rekor v1 log entry (`hashedrekord` 0.0.1) that cosign
+v3.0.6 writes on public-good today. If Sigstore moves signing to Rekor v2,
+`Release` fails at its check: prove the new bundle against the `pkg` verifier
+before relaxing it.
+
+Setup: no secret. `Release` needs `contents: write` and `id-token: write` for
+its `GITHUB_TOKEN`, which the workflow requests itself; the repository or the
+organization must allow workflows to request them, and nothing (branch
+protection or a ruleset) may block `github-actions[bot]` pushing to `main`.
+A push made with `GITHUB_TOKEN` does not trigger other workflows, so CI does
+not run on `Release` commits; the strict check in `Release` stands in for it.
 
 ## Rustup dist
 

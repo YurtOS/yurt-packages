@@ -1,0 +1,140 @@
+name: Release
+
+# Signs the package repository with GitHub Actions OIDC keyless Sigstore
+# (Fulcio certificate, Rekor log entry). Images pin this workflow's identity in
+# /etc/yurt-pkg/trusted-repos.toml:
+#
+#   signing_subject = "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main"
+#   signing_issuer  = "https://token.actions.githubusercontent.com"
+#
+# so the file name, and running on refs/heads/main only, are part of the
+# client contract. Trust in that identity is trust in write access to main:
+# whatever main holds when this runs gets signed. tools/repo_signing.py limits
+# what that can be: releases (name, version, build) that no signed index in
+# history ever listed, never a re-sign of one that one did. Each run plans the
+# archives to sign, regenerates index.json (index_version above every signed
+# one, fresh generated_at, expires_at 7 days later), signs the archives and the
+# index, checks every bundle with cosign verify-blob, and commits to main.
+#
+# Triggers: a manual dispatch on main; the end of each successful Publish
+# Package run on main (that workflow commits the archive and its package
+# metadata, and leaves the index to this one); and a weekly run that renews
+# expires_at (7 days; clients reject an index 30 days past it). Scheduled and
+# workflow_run runs always use the default branch's copy of this file.
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: [Publish Package]
+    types: [completed]
+    branches: [main]
+  schedule:
+    - cron: "17 5 * * 1"
+
+permissions: {}
+
+# Its own group, so a waiting Release never replaces a waiting Publish Package
+# (a group keeps one pending run). Races with the other writers to main are
+# caught before the push (below).
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  sign:
+    if: >-
+      github.repository == 'YurtOS/yurt-packages' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       github.event_name == 'schedule' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.head_repository.full_name == 'YurtOS/yurt-packages'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write # commit the index and the bundles to main
+      id-token: write # the OIDC token Fulcio certifies
+    steps:
+      - name: Check out main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          # The check anchors on the signed index in history.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Install the bundle checker's dependency
+        run: python3 -m pip install cryptography==46.0.3
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.0.6
+
+      - name: Plan the archives to sign
+        run: |
+          set -euo pipefail
+          # Only releases the signed index does not list (or, on the first run,
+          # the pinned legacy archives); fails on anything signed before. Runs
+          # on the committed tree, before the index is rewritten.
+          python3 tools/repo_signing.py plan --legacy tools/legacy_placeholder_bundles.txt \
+            --cosign cosign > "$RUNNER_TEMP/to-sign"
+          echo "START=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Regenerate index.json
+        run: |
+          set -euo pipefail
+          # Refuses unless the tree checks clean and index.json is the signed
+          # index (only before the first signed index: the placeholder).
+          python3 tools/repo_signing.py regenerate-index --legacy tools/legacy_placeholder_bundles.txt \
+            --cosign cosign --now "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
+      - name: Sign the planned archives
+        run: |
+          set -euo pipefail
+          while IFS= read -r archive; do
+            cosign sign-blob --yes --bundle "${archive}.bundle" "$archive"
+          done < "$RUNNER_TEMP/to-sign"
+          echo "signed $(wc -l < "$RUNNER_TEMP/to-sign") archives"
+
+      - name: Sign index.json
+        run: cosign sign-blob --yes --bundle index.json.bundle index.json
+
+      - name: Verify every bundle
+        # --strict: after signing, every bundle must be valid; no legacy
+        # placeholder and no unsigned archive may remain.
+        run: python3 tools/repo_signing.py check --strict --cosign cosign
+
+      - name: Drop the signed legacy entries
+        run: python3 tools/repo_signing.py prune-legacy --legacy tools/legacy_placeholder_bundles.txt
+
+      - name: Commit and push
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A -- index.json index.json.bundle tools/legacy_placeholder_bundles.txt 'artifacts/*.yurtpkg.bundle'
+          # Only the index, bundles and the legacy list may change. A deleted
+          # bundle shows as "D " and is unexpected, as is any unstaged change.
+          unexpected="$(git status --porcelain | grep -v -E '^M  index\.json(\.bundle)?$|^[AM]  artifacts/.*\.yurtpkg\.bundle$|^M  tools/legacy_placeholder_bundles\.txt$' || true)"
+          if [ -n "$unexpected" ]; then
+            echo "unexpected changes:" >&2
+            echo "$unexpected" >&2
+            exit 1
+          fi
+          version="$(python3 -c 'import json; print(json.load(open("index.json"))["index_version"])')"
+          git commit -m "chore: sign index.json (index_version ${version})"
+          # Another writer may have pushed since the checkout. Rebase onto it
+          # only if it touched nothing this run signed over; otherwise fail
+          # (a later run signs the new state).
+          git fetch origin main
+          moved="$(git diff --name-only "$START" origin/main -- index.json '*.bundle' packages artifacts tools/legacy_placeholder_bundles.txt)"
+          if [ -n "$moved" ]; then
+            echo "main changed signed paths since $START; not pushing:" >&2
+            echo "$moved" >&2
+            exit 1
+          fi
+          git rebase origin/main
+          git push origin HEAD:main
