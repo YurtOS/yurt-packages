@@ -257,25 +257,42 @@ def _bundle_problem(data: dict, payload: bytes) -> str | None:
     return None
 
 
+# cosign v3.0.6 starts every verification failure (identity, signature,
+# log inclusion) with this; anything else is cosign failing as a tool.
+COSIGN_VERIFY_FAILURE = "Error: failed to verify "
+
+
 def cosign_problem(cosign: str, bundle: Path, payload: Path) -> str | None:
-    result = subprocess.run(
-        [
-            cosign,
-            "verify-blob",
-            "--bundle",
-            str(bundle),
-            "--certificate-identity",
-            SUBJECT,
-            "--certificate-oidc-issuer",
-            ISSUER,
-            str(payload),
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        return f"cosign verify-blob failed: {(result.stderr or result.stdout).strip()}"
-    return None
+    """A verification failure's message, or None if it verifies.
+
+    A tool error (cosign missing, crashed, timed out, or a TUF, network or
+    usage error) raises SigningError: it says nothing about the bundle, so it
+    must never count as an invalid bundle and drop protections."""
+    try:
+        result = subprocess.run(
+            [
+                cosign,
+                "verify-blob",
+                "--bundle",
+                str(bundle),
+                "--certificate-identity",
+                SUBJECT,
+                "--certificate-oidc-issuer",
+                ISSUER,
+                str(payload),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise SigningError(f"cosign could not verify {bundle.name}: {error}") from error
+    output = (result.stderr or result.stdout).strip()
+    if result.returncode == 0:
+        return None
+    if result.returncode == 1 and any(line.startswith(COSIGN_VERIFY_FAILURE) for line in output.splitlines()):
+        return f"cosign verify-blob failed: {output}"
+    raise SigningError(f"cosign could not verify {bundle.name} (exit {result.returncode}): {output}")
 
 
 def cosign_bytes_problem(cosign: str, bundle: bytes, payload: bytes) -> str | None:
@@ -324,6 +341,7 @@ def find_anchor(root: Path, cosign: str | None = None) -> Anchor | None:
         return None  # no commit yet
     anchor = None
     verified: dict[tuple[bytes, bytes], bool] = {}
+    blob_cache: dict[str, bytes | None] = {}
     for commit in log.decode().split():
         bundle = git(root, "show", f"{commit}:{INDEX}.bundle")
         index = git(root, "show", f"{commit}:{INDEX}")
@@ -344,8 +362,14 @@ def find_anchor(root: Path, cosign: str | None = None) -> Anchor | None:
             anchor = Anchor(version, index, {}, {})
         elif version > anchor.index_version:
             anchor.index_version, anchor.index = version, index
+        blobs = package_blobs(root, commit)
         for name, entry in pinned.items():
-            data = git(root, "show", f"{commit}:packages/{name}.json")
+            blob = blobs.get(f"packages/{name}.json")
+            data = None
+            if blob is not None:
+                if blob not in blob_cache:
+                    blob_cache[blob] = git(root, "cat-file", "blob", blob)
+                data = blob_cache[blob]
             if data is None or hashlib.sha256(data).hexdigest() != entry.get("sha256") or len(data) != entry.get("size"):
                 continue  # this commit re-holds the index beside other metadata; the one that signed it holds it
             for release in json.loads(data)["versions"]:
@@ -353,6 +377,18 @@ def find_anchor(root: Path, cosign: str | None = None) -> Anchor | None:
                 anchor.releases.setdefault(key, set()).add((release["url"], release["sha256"], release["size"]))
                 anchor.urls.setdefault(release["url"], key)
     return anchor
+
+
+def package_blobs(root: Path, commit: str) -> dict[str, str]:
+    """packages/*.json path -> blob id at `commit`, from one ls-tree."""
+    listing = git(root, "ls-tree", commit, "packages/") or b""
+    blobs = {}
+    for line in listing.decode().splitlines():
+        meta, _, path = line.partition("\t")
+        fields = meta.split()
+        if len(fields) == 3 and fields[1] == "blob":
+            blobs[path] = fields[2]
+    return blobs
 
 
 def committed_bundles(root: Path) -> list[str]:
@@ -421,6 +457,8 @@ def check(root: Path, legacy: dict[str, str], cosign: str | None = None) -> Chec
             result.valid += 1
             result.index_signed = True
             version = json.loads(index_bytes)["index_version"]
+            # A different signed index at the same version counts as a rollback
+            # too: a client that cached the other one would refuse it.
             if anchor is not None and (
                 version < anchor.index_version or (version == anchor.index_version and index_bytes != anchor.index)
             ):

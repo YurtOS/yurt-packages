@@ -57,7 +57,8 @@ signed `index.json` (so CI and `Release` check out the full history):
 
 - the current index may not have a lower `index_version` than any of them;
 - every release (name, version, build) any of them ever listed was signed. Its
-  record must never change, its url must not move to another release, its
+  record must never change, its url must not move to another release (moving
+  an archive means publishing a new build), its
   bundle must stay valid, and it is never signed again, even after it was
   dropped from the metadata and re-added;
 - only releases no signed index ever listed may be unsigned ("pending"), and
@@ -81,7 +82,10 @@ Each run:
    never one whose `index_version` is not higher than the one they cached;
 3. signs the planned archives and `index.json`;
 4. runs `tools/repo_signing.py check --strict --cosign cosign`, which runs
-   `cosign verify-blob` with the pinned identity on every bundle;
+   `cosign verify-blob` with the pinned identity on every bundle. Only a
+   verification failure (cosign's `Error: failed to verify ...`) counts as an
+   invalid bundle. A cosign tool error (TUF, network, timeout, crash) aborts the
+   run;
 5. drops the signed entries from `tools/legacy_placeholder_bundles.txt` and
    commits. It then fetches `main`: if another writer has changed the index, a
    bundle, `packages/` or `artifacts/` since the checkout, it fails (the next run
