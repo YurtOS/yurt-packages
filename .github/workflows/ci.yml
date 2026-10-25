@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # test_repo_signing checks the committed tree against the signed history
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
@@ -31,11 +33,14 @@ jobs:
 
   # Every committed bundle must be a valid Sigstore bundle from release.yml on main,
   # checked by shape, payload digest and certificate identity, then by cosign verify-blob.
-  # Only the entries of tools/legacy_placeholder_bundles.txt may still be unsigned.
+  # Unsigned may be only releases the signed index does not list yet, and, before the
+  # first signed index, the archives pinned in tools/legacy_placeholder_bundles.txt.
   bundles:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the check anchors on the signed index in history
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"

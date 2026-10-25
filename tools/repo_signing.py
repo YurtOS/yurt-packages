@@ -14,21 +14,28 @@ digest and the certificate identity. With `--cosign` it also runs a full
 `cosign verify-blob` (certificate chain, signature, transparency log) on each
 bundle.
 
-Subcommands:
+What may be signed is anchored in git history (a full clone is required):
+the anchor is the validly signed index.json with the highest index_version
+that any commit holds. Every release (name, version, build) that the anchor's
+package files list was signed then; its record must not change and its bundle
+must stay valid. Only releases the anchor does not list may be unsigned
+("pending") and get signed. Before any index was signed (the first run),
+the legacy list names the 12 archives committed with placeholder bundles,
+each pinned to its sha256; once an anchor exists the list must be empty.
 
-  regenerate-index --now <RFC 3339>   rebuild index.json from packages/*.json,
-                                      bump index_version, set generated_at and
-                                      expires_at (generated_at + 7 days)
-  plan                                print the archives whose bundle is missing
-                                      or a placeholder, one path per line
-  check [--legacy FILE] [--cosign BIN] [--strict]
-                                      fail unless every bundle is a valid
-                                      bundle for its payload; paths listed in
-                                      FILE may still be placeholders or
-                                      missing, and archives of packages the
-                                      signed index does not list yet may lack
-                                      a bundle (--strict allows neither)
-  prune-legacy --legacy FILE          drop the entries of FILE that now hold a
+Subcommands (all take --legacy FILE and --cosign BIN):
+
+  regenerate-index --now <RFC 3339>   check the tree, verify the current
+                                      index.json against its bundle, then
+                                      rebuild it from packages/*.json with
+                                      index_version above the anchor's,
+                                      generated_at now, expires_at + 7 days
+  plan                                print the archives that may be signed now
+                                      (pending or legacy), one path per line;
+                                      fail if the check finds any problem
+  check [--strict]                    fail on any problem; --strict also fails
+                                      on any unsigned (legacy or pending) path
+  prune-legacy                        drop the entries of FILE that now hold a
                                       valid bundle
 """
 
@@ -42,7 +49,8 @@ import json
 import os
 import subprocess
 import sys
-from dataclasses import dataclass
+import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 
 SUBJECT = "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main"
@@ -87,9 +95,15 @@ def dump_json(value: object) -> bytes:
 @dataclass(frozen=True)
 class Archive:
     package: str
+    version: str
+    build: str
     path: str  # relative to the repository root
     sha256: str
     size: int
+
+    @property
+    def key(self) -> tuple[str, str, str]:
+        return (self.package, self.version, self.build)
 
 
 def published_archives(root: Path) -> list[Archive]:
@@ -112,18 +126,32 @@ def published_archives(root: Path) -> list[Archive]:
             data = file.read_bytes()
             if len(data) != version["size"] or hashlib.sha256(data).hexdigest() != version["sha256"]:
                 raise SigningError(f"{url}: archive does not match its package record")
-            archives.append(Archive(package_path.stem, url, version["sha256"], version["size"]))
+            archives.append(
+                Archive(package_path.stem, version["version"], version["build"], url, version["sha256"], version["size"])
+            )
     return archives
 
 
 def regenerate_index(root: Path, now: dt.datetime, legacy: dict[str, str] | None = None, cosign: str | None = None) -> dict:
+    """Rebuild index.json; refuses unless the tree checks clean and the
+    current index.json is the signed one (or, before any index was signed,
+    carries the placeholder bundle)."""
+    legacy = legacy or {}
+    result = check(root, legacy, cosign)
+    if result.problems:
+        raise SigningError("refusing to regenerate the index: " + "; ".join(result.problems))
     index_path = root / INDEX
     previous = json.loads(index_path.read_bytes())
     if previous.get("schema") != 1:
         raise SigningError(f"unsupported index schema {previous.get('schema')!r}")
+    if result.anchor is None:
+        if (root / f"{INDEX}.bundle").read_bytes() != PLACEHOLDER:
+            raise SigningError("no signed index in history, and index.json.bundle is not the legacy placeholder")
+    elif not result.index_signed:
+        raise SigningError("index.json is not the signed index")
+    floor = max(previous["index_version"], result.anchor.index_version if result.anchor else 0)
     if now <= parse_time(previous["generated_at"]):
         raise SigningError(f"--now {format_time(now)} is not after generated_at {previous['generated_at']}")
-    published_archives(root)  # every record must match its archive before we sign over it
     packages = {}
     for package_path in sorted((root / "packages").glob("*.json")):
         data = package_path.read_bytes()
@@ -134,7 +162,7 @@ def regenerate_index(root: Path, now: dt.datetime, legacy: dict[str, str] | None
         }
     index = {
         "schema": 1,
-        "index_version": previous["index_version"] + 1,
+        "index_version": floor + 1,
         "generated_at": format_time(now),
         "expires_at": format_time(now + EXPIRY),
         "packages": dict(sorted(packages.items())),
@@ -249,9 +277,73 @@ def cosign_problem(cosign: str, bundle: Path, payload: Path) -> str | None:
     return None
 
 
-def signing_targets(root: Path) -> list[str]:
-    """Paths whose bundle is expected: index.json and every published archive."""
-    return [INDEX] + [archive.path for archive in published_archives(root)]
+def cosign_bytes_problem(cosign: str, bundle: bytes, payload: bytes) -> str | None:
+    with tempfile.TemporaryDirectory() as tmp:
+        bundle_path = Path(tmp, "payload.bundle")
+        payload_path = Path(tmp, "payload")
+        bundle_path.write_bytes(bundle)
+        payload_path.write_bytes(payload)
+        return cosign_problem(cosign, bundle_path, payload_path)
+
+
+def verify(bundle: bytes, payload: bytes, cosign: str | None) -> str | None:
+    problem = bundle_problem(bundle, payload)
+    if problem is None and cosign:
+        problem = cosign_bytes_problem(cosign, bundle, payload)
+    return problem
+
+
+def git(root: Path, *args: str) -> bytes | None:
+    result = subprocess.run(["git", "-C", str(root), *args], capture_output=True)
+    return result.stdout if result.returncode == 0 else None
+
+
+@dataclass
+class Anchor:
+    """The signed index with the highest index_version in history."""
+
+    commit: str
+    index_version: int
+    index: bytes
+    releases: dict[tuple[str, str, str], tuple[str, str, int]]  # key -> (url, sha256, size)
+
+
+def find_anchor(root: Path, cosign: str | None = None) -> Anchor | None:
+    if git(root, "rev-parse", "--is-inside-work-tree") is None:
+        raise SigningError("not a git checkout: the signed history is needed")
+    if git(root, "rev-parse", "--is-shallow-repository") != b"false\n":
+        raise SigningError("shallow clone: the signed history is needed (fetch-depth: 0)")
+    log = git(root, "log", "--format=%H", "HEAD", "--", f"{INDEX}.bundle")
+    if log is None:
+        return None  # no commit yet
+    candidates = []
+    for order, commit in enumerate(log.decode().split()):
+        bundle = git(root, "show", f"{commit}:{INDEX}.bundle")
+        index = git(root, "show", f"{commit}:{INDEX}")
+        if bundle is None or index is None or bundle_problem(bundle, index) is not None:
+            continue
+        try:
+            version = int(json.loads(index)["index_version"])
+        except (ValueError, KeyError, TypeError):
+            continue
+        candidates.append((-version, order, commit, bundle, index))
+    for _, _, commit, bundle, index in sorted(candidates):
+        # Highest version first; with cosign, a forged bundle is skipped.
+        if cosign and cosign_bytes_problem(cosign, bundle, index) is not None:
+            continue
+        return Anchor(commit, json.loads(index)["index_version"], index, anchor_releases(root, commit, index))
+    return None
+
+
+def anchor_releases(root: Path, commit: str, index: bytes) -> dict[tuple[str, str, str], tuple[str, str, int]]:
+    releases = {}
+    for name, entry in json.loads(index)["packages"].items():
+        data = git(root, "show", f"{commit}:packages/{name}.json")
+        if data is None or hashlib.sha256(data).hexdigest() != entry["sha256"] or len(data) != entry["size"]:
+            raise SigningError(f"signed index at {commit[:12]} pins packages/{name}.json, which that commit does not hold")
+        for version in json.loads(data)["versions"]:
+            releases[(name, version["version"], version["build"])] = (version["url"], version["sha256"], version["size"])
+    return releases
 
 
 def committed_bundles(root: Path) -> list[str]:
@@ -265,6 +357,7 @@ def committed_bundles(root: Path) -> list[str]:
 
 
 def read_legacy(path: Path | None) -> dict[str, str]:
+    """Legacy entries: bundle path -> sha256 of the archive it may sign."""
     if path is None or not path.exists():
         return {}
     entries = {}
@@ -279,114 +372,115 @@ def read_legacy(path: Path | None) -> dict[str, str]:
     return entries
 
 
-def find_anchor(root: Path, cosign: str | None = None) -> None:
-    return None
-
-
-def plan(root: Path, legacy: dict[str, str] | None = None, cosign: str | None = None) -> list[str]:
-    """Archives to sign: those whose bundle is missing or the placeholder.
-
-    Any other invalid bundle is an error, never re-signed: it means the archive
-    or its bundle changed after signing.
-    """
-    targets = []
-    for archive in published_archives(root):
-        bundle = root / f"{archive.path}.bundle"
-        if not bundle.exists() or bundle.read_bytes() == PLACEHOLDER:
-            targets.append(archive.path)
-            continue
-        problem = bundle_problem(bundle.read_bytes(), (root / archive.path).read_bytes())
-        if problem:
-            raise SigningError(f"{archive.path}.bundle: {problem}; refusing to re-sign")
-    return targets
-
-
-def pending_packages(root: Path) -> set[str]:
-    """Packages whose metadata the signed index does not list yet.
-
-    Publish Package commits an archive and its packages/<name>.json; release.yml
-    then regenerates the index and signs the archive. Until then the package
-    file's hash differs from the index entry, and clients never reach the
-    archive through a signed index.
-    """
-    listed = json.loads((root / INDEX).read_bytes()).get("packages", {})
-    pending = set()
-    for package_path in (root / "packages").glob("*.json"):
-        data = package_path.read_bytes()
-        entry = listed.get(package_path.stem)
-        if entry != {
-            "sha256": hashlib.sha256(data).hexdigest(),
-            "size": len(data),
-            "url": f"packages/{package_path.stem}.json",
-        }:
-            pending.add(package_path.stem)
-    return pending
-
-
 @dataclass
 class CheckResult:
     problems: list[str]
     valid: int = 0
-    legacy: int = 0  # placeholders or missing bundles the legacy list allows
-    pending: int = 0  # missing bundles of archives the signed index does not list yet
-    anchor: None = None
+    legacy: int = 0  # unsigned archives the legacy list allows (first run only)
+    pending: int = 0  # unsigned archives the signed index does not list yet
+    to_sign: list[str] = field(default_factory=list)
+    anchor: Anchor | None = None
+    index_signed: bool = False  # index.json.bundle is valid for index.json
 
 
 def check(root: Path, legacy: dict[str, str], cosign: str | None = None) -> CheckResult:
-    legacy = set(legacy)
-    result = CheckResult([])
+    anchor = find_anchor(root, cosign)
+    result = CheckResult([], anchor=anchor)
     problems = result.problems
-    pending = pending_packages(root)
-    pending_archives = {archive.path for archive in published_archives(root) if archive.package in pending}
-    targets = signing_targets(root)
-    expected = {f"{target}.bundle" for target in targets}
+    archives = published_archives(root)
+    expected = {f"{INDEX}.bundle"} | {f"{archive.path}.bundle" for archive in archives}
     for bundle_rel in committed_bundles(root):
         if bundle_rel not in expected:
             problems.append(f"{bundle_rel}: no index.json or published archive to sign")
-    for target in targets:
-        bundle_rel = f"{target}.bundle"
+    if anchor is not None and legacy:
+        problems.append("legacy list must be empty once a signed index.json exists")
+    for entry in sorted(set(legacy) - expected):
+        problems.append(f"legacy entry {entry}: not a bundle path this repository expects")
+
+    # index.json
+    index_bundle = root / f"{INDEX}.bundle"
+    index_bytes = (root / INDEX).read_bytes()
+    if index_bundle.is_symlink() or not index_bundle.is_file():
+        problems.append(f"{INDEX}.bundle: missing")
+    elif anchor is None and index_bundle.read_bytes() == PLACEHOLDER:
+        result.legacy += 1  # before the first signed index
+    else:
+        problem = verify(index_bundle.read_bytes(), index_bytes, cosign)
+        if problem:
+            problems.append(f"{INDEX}.bundle: {problem}")
+        else:
+            result.valid += 1
+            result.index_signed = True
+            version = json.loads(index_bytes)["index_version"]
+            if anchor is not None and (
+                version < anchor.index_version or (version == anchor.index_version and index_bytes != anchor.index)
+            ):
+                problems.append(
+                    f"{INDEX}: index_version {version} rolls back the signed index_version {anchor.index_version}"
+                )
+
+    # archives
+    signed_urls = {url: key for key, (url, _, _) in (anchor.releases.items() if anchor else [])}
+    for archive in archives:
+        bundle_rel = f"{archive.path}.bundle"
         bundle = root / bundle_rel
+        previously_signed = anchor is not None and archive.key in anchor.releases
+        if previously_signed and anchor.releases[archive.key] != (archive.path, archive.sha256, archive.size):
+            problems.append(f"{archive.path}: {archive.key} changed after it was signed; publish a new build")
+            continue
+        if not previously_signed and archive.path in signed_urls:
+            problems.append(f"{archive.path}: already signed as {signed_urls[archive.path]}")
+            continue
         if bundle.is_symlink():
             problems.append(f"{bundle_rel}: is a symlink")
             continue
-        if not bundle.is_file():
-            if bundle_rel in legacy:
-                result.legacy += 1
-            elif target in pending_archives:
-                result.pending += 1
+        present = bundle.is_file()
+        data = bundle.read_bytes() if present else None
+        if bundle_rel in legacy and anchor is None and (not present or data == PLACEHOLDER):
+            if legacy[bundle_rel] != archive.sha256:
+                problems.append(f"{bundle_rel}: the legacy entry pins sha256 {legacy[bundle_rel]}, the archive is {archive.sha256}")
             else:
-                problems.append(f"{bundle_rel}: missing")
+                result.legacy += 1
+                result.to_sign.append(archive.path)
             continue
-        data = bundle.read_bytes()
-        if data == PLACEHOLDER and bundle_rel in legacy:
-            result.legacy += 1
+        if not present:
+            if previously_signed:
+                problems.append(f"{bundle_rel}: deleted after {archive.key} was signed")
+            else:
+                result.pending += 1
+                result.to_sign.append(archive.path)
             continue
-        problem = bundle_problem(data, (root / target).read_bytes())
-        if problem is None and cosign:
-            problem = cosign_problem(cosign, bundle, root / target)
+        problem = verify(data, (root / archive.path).read_bytes(), cosign)
         if problem:
             problems.append(f"{bundle_rel}: {problem}")
         else:
             result.valid += 1
-    for entry in sorted(legacy - expected):
-        problems.append(f"legacy entry {entry}: not a bundle path this repository expects")
     return result
 
 
+def plan(root: Path, legacy: dict[str, str] | None = None, cosign: str | None = None) -> list[str]:
+    """Archives that may be signed now: pending releases, and legacy entries
+    before the first signed index. Refuses on any check problem, so a path
+    that was signed before is never signed again."""
+    result = check(root, legacy or {}, cosign)
+    if result.problems:
+        raise SigningError("refusing to sign: " + "; ".join(result.problems))
+    return result.to_sign
+
+
 def prune_legacy(root: Path, legacy_path: Path) -> list[str]:
-    remaining = []
     lines = legacy_path.read_text().splitlines()
-    for entry in sorted(line.split()[0] for line in lines if line.strip() and not line.startswith("#")):
-        bundle = root / entry
-        payload = root / entry.removesuffix(".bundle")
+    header = [line for line in lines if line.startswith("#")]
+    remaining = []
+    for line in lines:
+        fields = line.split("#", 1)[0].split()
+        if not fields:
+            continue
+        bundle = root / fields[0]
+        payload = root / fields[0].removesuffix(".bundle")
         if bundle.is_file() and payload.is_file() and bundle_problem(bundle.read_bytes(), payload.read_bytes()) is None:
             continue
-        remaining.append(entry)
-    header = [
-        line
-        for line in legacy_path.read_text().splitlines()
-        if line.startswith("#")
-    ]
+        remaining.append(line)
     legacy_path.write_text("\n".join(header + remaining) + "\n")
     return remaining
 
@@ -394,27 +488,28 @@ def prune_legacy(root: Path, legacy_path: Path) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--repo-root", type=Path, default=Path("."))
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--legacy", type=Path, help="the legacy placeholder list")
+    common.add_argument("--cosign", help="cosign binary: also run cosign verify-blob")
     sub = parser.add_subparsers(dest="command", required=True)
-    regen = sub.add_parser("regenerate-index")
+    regen = sub.add_parser("regenerate-index", parents=[common])
     regen.add_argument("--now", required=True)
-    sub.add_parser("plan")
-    chk = sub.add_parser("check")
-    chk.add_argument("--legacy", type=Path)
-    chk.add_argument("--cosign")
+    sub.add_parser("plan", parents=[common])
+    chk = sub.add_parser("check", parents=[common])
     chk.add_argument("--strict", action="store_true", help="also fail on legacy or pending unsigned bundles")
-    prune = sub.add_parser("prune-legacy")
-    prune.add_argument("--legacy", type=Path, required=True)
+    sub.add_parser("prune-legacy", parents=[common])
     args = parser.parse_args(argv)
     root = args.repo_root
     try:
+        legacy = read_legacy(args.legacy)
         if args.command == "regenerate-index":
-            index = regenerate_index(root, parse_time(args.now))
+            index = regenerate_index(root, parse_time(args.now), legacy, args.cosign)
             print(f"index_version {index['index_version']}, expires_at {index['expires_at']}")
         elif args.command == "plan":
-            for path in plan(root):
+            for path in plan(root, legacy, args.cosign):
                 print(path)
         elif args.command == "check":
-            result = check(root, read_legacy(args.legacy), args.cosign)
+            result = check(root, legacy, args.cosign)
             for problem in result.problems:
                 print(f"error: {problem}", file=sys.stderr)
             if result.problems:
@@ -427,6 +522,8 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             print(f"ok: {result.valid} valid bundles, {result.legacy} legacy placeholders, {result.pending} pending archives")
         elif args.command == "prune-legacy":
+            if args.legacy is None:
+                raise SigningError("prune-legacy needs --legacy")
             remaining = prune_legacy(root, args.legacy)
             print(f"{len(remaining)} legacy placeholder entries remain")
     except SigningError as error:

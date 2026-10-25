@@ -48,33 +48,55 @@ that identity. It signs keyless with the job's GitHub Actions OIDC token (a
 Fulcio certificate and a Rekor log entry) through `cosign sign-blob --bundle`,
 which writes a Sigstore bundle v0.3
 (`application/vnd.dev.sigstore.bundle.v0.3+json`) with a message signature
-over the raw file bytes, the format the `pkg` verifier reads. Each run:
+over the raw file bytes, the format the `pkg` verifier reads.
 
-1. regenerates `index.json` from `packages/*.json`: `index_version` + 1,
-   `generated_at` now, `expires_at` 7 days later (clients accept an index
-   until 30 days past `expires_at`, and never one whose `index_version` is
-   not higher than the one they cached);
-2. signs every published archive whose bundle is missing or the old
-   placeholder (a real bundle that no longer matches is an error, never
-   re-signed);
-3. signs `index.json`;
+Trust in that identity is trust in write access to `main`: `Release` signs
+what `main` holds. `tools/repo_signing.py` limits that to releases nobody signed
+before. It anchors on the signed index in git history, meaning the validly signed
+`index.json` with the highest `index_version` that any commit holds (so CI and
+`Release` check out the full history). Every release (name, version, build) that
+the anchor's package files list was signed then. Its record must never change,
+its bundle must stay valid, and it is never signed again. Only releases the
+anchor does not list may be unsigned ("pending"), and only those get signed.
+
+Each run:
+
+1. plans, on the committed tree, which archives to sign: pending releases, and
+   on the first run the legacy archives. Any check problem stops the run;
+2. regenerates `index.json` from `packages/*.json`. Before that, it verifies the
+   current `index.json` against its bundle with cosign; only before the first
+   signed index may that bundle be the placeholder. The new index gets
+   `index_version` above the anchor's, `generated_at` now, and `expires_at` 7
+   days later. Clients accept an index until 30 days past `expires_at`, and
+   never one whose `index_version` is not higher than the one they cached;
+3. signs the planned archives and `index.json`;
 4. runs `tools/repo_signing.py check --strict --cosign cosign`, which runs
    `cosign verify-blob` with the pinned identity on every bundle;
-5. drops the signed paths from `tools/legacy_placeholder_bundles.txt`, commits
-   and pushes to `main` with the job's `GITHUB_TOKEN`.
+5. drops the signed entries from `tools/legacy_placeholder_bundles.txt` and
+   commits. It then fetches `main`: if another writer has changed the index, a
+   bundle, `packages/` or `artifacts/` since the checkout, it fails (the next run
+   signs the new state). Otherwise it rebases and pushes with the job's
+   `GITHUB_TOKEN`.
 
-It runs when a `Publish Package` run on `main` succeeds, and by manual dispatch
-on `main` (for example to renew `expires_at`: an index more than 37 days old is
-rejected by every client). It shares the `publish-package` concurrency group.
+It runs when a `Publish Package` run on `main` succeeds, by manual dispatch on
+`main`, and weekly (Mondays 05:17 UTC). The weekly run renews `expires_at`:
+every client rejects an index more than 37 days old. It has its own concurrency
+group, `release`.
 
 CI (`bundles` job) runs `tools/repo_signing.py check` with `cosign verify-blob`
-on every pull request and push. Every committed bundle must be valid, except
-the paths in `tools/legacy_placeholder_bundles.txt` (the placeholders committed
-before `Release` existed; never add an entry) and the archives of a package
-whose metadata the signed index does not list yet (between a `Publish Package`
-commit and the `Release` run after it). Until `Release` re-signs it, `pkg update`
-can fail for a package whose `packages/<name>.json` a publish just changed:
-its hash no longer matches the signed index, and clients fail closed.
+on every pull request and push. Every committed bundle must be valid. The only
+unsigned archives allowed are:
+
+- pending releases, between a `Publish Package` commit and the `Release` run
+  after it. A placeholder is never allowed;
+- before the first signed index only, the 12 archives in
+  `tools/legacy_placeholder_bundles.txt`. These were committed before `Release`
+  existed, and each is pinned to its sha256. Once a signed index exists, the
+  list must be empty. Never add an entry.
+
+Until `Release` re-signs, `pkg update` can fail for a package whose
+`packages/<name>.json` a publish just changed: its hash no longer matches the
+signed index, and clients fail closed.
 
 The checker requires the Rekor v1 log entry (`hashedrekord` 0.0.1) that cosign
 v3.0.6 writes on public-good today. If Sigstore moves signing to Rekor v2,
