@@ -158,5 +158,22 @@ class PublishPackageHandoverTest(unittest.TestCase):
         self.assertLess(self.commit.index("refusing to commit a bundle"), self.commit.index("git commit"))
 
 
+class PublishPackageBuildEnvTest(unittest.TestCase):
+    """The guest SDK's cargo-yurt parses `cargo tree` output and fails on ANSI color codes.
+
+    dtolnay/rust-toolchain exports CARGO_TERM_COLOR=always unless the variable is already set,
+    so the job must set it to never before that step runs, and no step may turn it back on.
+    """
+
+    def setUp(self) -> None:
+        self.job = load(PUBLISH)["jobs"]["publish"]
+
+    def test_cargo_color_is_off_for_the_whole_job(self) -> None:
+        self.assertEqual(self.job.get("env", {}).get("CARGO_TERM_COLOR"), "never")
+        for step in self.job["steps"]:
+            self.assertNotIn("CARGO_TERM_COLOR", step.get("env", {}), step.get("name"))
+            self.assertNotIn("CARGO_TERM_COLOR", step.get("run", ""), step.get("name"))
+
+
 if __name__ == "__main__":
     unittest.main()
