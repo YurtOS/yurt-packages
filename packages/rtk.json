@@ -1,0 +1,18 @@
+{
+  "name": "rtk",
+  "versions": [
+    {
+      "version": "0.50.0",
+      "build": "1",
+      "url": "artifacts/rtk/0.50.0/rtk-0.50.0-1.yurtpkg",
+      "sha256": "0af2997dc69c151058b6bc2989a453e0fdd5263cf355dd5599c89373c3d8406d",
+      "size": 3880343,
+      "signing": {
+        "subject": "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main",
+        "issuer": "https://token.actions.githubusercontent.com"
+      },
+      "depends": [],
+      "yanked": false
+    }
+  ]
+}
