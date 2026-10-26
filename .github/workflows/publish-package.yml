@@ -40,6 +40,12 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    env:
+      # dtolnay/rust-toolchain exports CARGO_TERM_COLOR=always when it is
+      # unset. The guest SDK's cargo-yurt parses `cargo tree` output, and
+      # colored output makes it fail ("cannot map tracked guest cargo tree
+      # line") for every port with registry-ported crates, rtk among them.
+      CARGO_TERM_COLOR: never
     steps:
       - name: Check out yurt-packages
         uses: actions/checkout@v7
