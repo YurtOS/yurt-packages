@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "index_version": 29,
-  "generated_at": "2026-10-27T10:59:43Z",
-  "expires_at": "2026-11-03T10:59:43Z",
+  "index_version": 30,
+  "generated_at": "2026-10-27T11:16:46Z",
+  "expires_at": "2026-11-03T11:16:46Z",
   "packages": {
     "busybox": {
       "sha256": "36e883bc8210d10fe6b15ecd5cc7e5528d34f44373341b04c37afcb68b5aaaf6",
@@ -18,6 +18,11 @@
       "sha256": "8b0b002e0149d21491f8a3a5be6032f89d7c2cd54aa51929a585fdcc3bd95dea",
       "size": 619,
       "url": "packages/gemini-cli.json"
+    },
+    "gettext": {
+      "sha256": "3ef20467723bddc9c55fbfe77ac7fa69ce2c8286e1f3b5f8a71eff2fc584fd3a",
+      "size": 527,
+      "url": "packages/gettext.json"
     },
     "jupyter-kernel": {
       "sha256": "bca2c33c8db91c06394bec2a564dcd2daa022cfb7d3abcd7677321fb38d5e06d",
