@@ -227,7 +227,7 @@ class PublishPushTest(unittest.TestCase):
     def test_gives_up_when_main_keeps_moving(self) -> None:
         result = self.run_step(self.push_hook(times=100))
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("5 push attempts failed", result.stdout)
+        self.assertIn("5 push attempts failed (main kept moving", result.stdout)
         self.assertEqual(self.git("--git-dir", str(self.origin), "log", "-1", "--format=%s", "main"), "race 4")
 
     def test_refuses_a_main_that_changed_the_package_metadata(self) -> None:
@@ -275,6 +275,32 @@ class PublishPushTest(unittest.TestCase):
         result = self.run_step({"PUSH_HOOK": str(hook)})
         self.assert_refused(self.head(), result, "packages/zstd.json")
         self.assertEqual(self.git("--git-dir", str(self.origin), "log", "-1", "--format=%s", "main"), "racing zstd publish")
+
+    def test_a_push_that_landed_but_reported_failure_is_not_a_conflict(self) -> None:
+        # The first push reaches main, then the client sees an error (a dropped connection).
+        self.shim(
+            "git",
+            f"""
+            for arg in "$@"; do
+              if [ "$arg" = push ] && [ ! -e {self.tmp}/pushed-once ]; then
+                touch {self.tmp}/pushed-once
+                {REAL_GIT} "$@" || exit 1
+                exit 1
+              fi
+            done
+            exec {REAL_GIT} "$@"
+            """,
+        )
+        result = self.run_step()
+        self.assertIn("main already has", result.stdout)
+        self.assert_published_on(self.start, result)
+
+    def test_a_package_whose_name_extends_this_one_is_not_a_conflict(self) -> None:
+        # Pathspecs match whole components: artifacts/zstd does not cover artifacts/zstd-extra.
+        moved = self.move_main(
+            {"packages/zstd-extra.json": "{}\n", "artifacts/zstd-extra/1.0.0/zstd-extra-1.0.0-1.yurtpkg": "x\n"}
+        )
+        self.assert_published_on(moved, self.run_step())
 
     def test_nothing_to_commit_pushes_nothing(self) -> None:
         for rel in [ARCHIVE, "packages/zstd.json"]:

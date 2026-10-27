@@ -46,10 +46,11 @@ on:
 permissions:
   contents: write
 
-# Every run commits the package index to main. One run at a time, so a
-# second dispatch starts from the first one's commit instead of racing its
-# push. (A group holds one pending run: a third dispatch while one waits
-# replaces the waiting one.)
+# Every run commits a package to main. One run at a time, so two publishes
+# never push at once. A queued run still checks out the main it was
+# dispatched on; its commit step rebases onto the main the first run left.
+# (A group holds one pending run: a third dispatch while one waits replaces
+# the waiting one.)
 concurrency:
   group: publish-package
   cancel-in-progress: false
@@ -391,6 +392,11 @@ jobs:
           attempts=5
           for attempt in $(seq "$attempts"); do
             git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" fetch origin main
+            # A push that landed although the client saw it fail.
+            if git merge-base --is-ancestor HEAD origin/main; then
+              echo "main already has $(git rev-parse HEAD) (attempt $attempt)"
+              exit 0
+            fi
             changed="$(git --literal-pathspecs diff --name-only "$start" origin/main -- "${scope[@]}")"
             # Bundles another Release run signed for releases already there
             # are not a conflict; a bundle for one of this commit's archives is.
@@ -412,5 +418,5 @@ jobs:
             echo "push attempt $attempt of $attempts failed; refetching main"
             sleep $((attempt * 5))
           done
-          echo "::error::main kept moving: $attempts push attempts failed"
+          echo "::error::$attempts push attempts failed (main kept moving, or the push itself fails; see above)"
           exit 1
