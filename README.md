@@ -51,25 +51,37 @@ anything is built, the workflow's "Publish only a new version" step
   version change, and for the Python set, whose shared `yurt_N` build moves
   without a CPython version change. Bump the port's `build` in yurt-ports
   first.
+- A release that pkg would not rank above the newest published one is refused
+  unless the dispatch sets `allow_downgrade`. pkg picks the highest semver
+  `version`, then the highest `N` of a `yurt_N` build (any other build, such as
+  `1`, counts as 0), and skips yanked releases. So openssl 3.5.8 is refused
+  while 4.0.0 is published, and so is `0.1.1-yurt_0` next to a published
+  `0.1.1-2`. A downgrade publish adds an archive that `pkg install` never
+  picks on its own; set the input only when that is the point (to pin
+  `name@version` explicitly, for example). A port still on a plain numeric
+  build (`1`, `2`) ranks 0 against every published build of its version, so a
+  rebuild of that version needs both inputs; moving it to `yurt_N` avoids that.
 - A new `version`, or a package not published yet, goes ahead.
 
 **Tokens.** `build` reads the private repositories with `PACKAGE_READ_TOKEN`,
 a repository secret: a fine-grained token with Contents: read on yurt-ports,
-yurt-pkg, yurtos-kernel, yurt-toolchain (the guest SDK release), yurt-node,
-yurt-go and yurt-clang. `publish` reads yurt-ports and yurt-pkg with it, and
+yurt-pkg, yurtos-kernel, yurt-toolchain and yurt-rust (the guest SDK
+installer fetches both releases), yurt-node, yurt-go and yurt-clang. `publish` reads yurt-ports and yurt-pkg with it, and
 only its last step, the push, gets `PACKAGE_PUBLISH_TOKEN`. Neither job's
 `GITHUB_TOKEN` can write. Every checkout keeps no credential
 (`persist-credentials: false`).
 
 **Dry run.** `dry_run: true` builds, checks and commits as a real publish
-does, prints the commit, and stops before the push: nothing reaches main. A dry run
-may be dispatched from any branch, which is how a change to this workflow is
-tried before it merges; `Release` runs only after runs on main (one after a
-dry run on main finds nothing new to sign and only renews the index).
+does, prints the commit, and stops before the push: the package never reaches
+main. A dry run may be dispatched from any branch, which is how a change to
+this workflow is tried before it merges. `Release` follows only runs on main,
+dry or not: one after a dry run on main finds nothing new to sign, but still
+commits a renewed index to main. Dispatch dry runs from a branch to avoid
+that.
 
 Each package builds from the yurt-ports port of the same name, at yurt-ports
-main's head or at the `ports_sha` input (a commit in main's history). The
-workflow runs from this repository's main only. The packages this workflow
+main's head or at the `ports_sha` input (a commit in main's history). A real
+publish runs from this repository's main only. The packages this workflow
 gained with the slim playground need yurt-ports#265 on main: python,
 jupyter-kernel, python-seal, numpy's and pyzmq's skipped rebuild, and node's and
 gemini-cli's `yurt_N` builds (published before it, they would go out as
