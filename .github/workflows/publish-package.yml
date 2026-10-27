@@ -62,6 +62,16 @@ jobs:
       # line") for every port with registry-ported crates, rtk among them.
       CARGO_TERM_COLOR: never
     steps:
+      # Only main publishes: the commit step pushes to main, and Release
+      # signs only what a Publish Package run on main committed. A dispatch
+      # from another branch would put that branch's commits on main.
+      - name: Runs on main only
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          [ "$REF" = refs/heads/main ] ||
+            { echo "::error::Publish Package runs from main only (this run is on $REF)"; exit 1; }
+
       - name: Check out yurt-packages
         uses: actions/checkout@v7
         with:

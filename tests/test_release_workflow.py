@@ -186,6 +186,13 @@ class PublishPackagePortsTest(unittest.TestCase):
     def step(self, name: str) -> dict:
         return next(step for step in self.steps if step.get("name") == name)
 
+    def test_a_run_off_main_stops_before_anything_else(self) -> None:
+        # The commit step pushes HEAD:main; a dispatch from another branch
+        # must never get there.
+        self.assertEqual(self.steps[0]["name"], "Runs on main only")
+        self.assertEqual(self.steps[0]["env"]["REF"], "${{ github.ref }}")
+        self.assertIn('[ "$REF" = refs/heads/main ]', self.steps[0]["run"])
+
     def test_ports_commit_is_an_input_and_must_be_on_main(self) -> None:
         trigger = self.wf.get("on", self.wf.get(True))
         self.assertIn("ports_sha", trigger["workflow_dispatch"]["inputs"])

@@ -27,7 +27,10 @@ this repository. The workflow checks out the source-light port from
 It never commits `index.json` or a bundle: `Release` does that (below).
 
 Each package builds from the yurt-ports port of the same name, at yurt-ports
-main's head or at the `ports_sha` input (a commit in main's history). Every
+main's head or at the `ports_sha` input (a commit in main's history). The
+workflow runs from this repository's main only. The packages this workflow
+gained with the slim playground (python, jupyter-kernel, and numpy's and
+pyzmq's skipped rebuild) need yurt-ports#265 on main. Every
 package publishes on its own: no image or playground release is involved, and
 a sandbox picks up a new build with `pkg update` / `pkg upgrade`. Notes:
 
