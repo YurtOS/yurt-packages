@@ -1,0 +1,23 @@
+{
+  "name": "pyzmq",
+  "versions": [
+    {
+      "version": "26.4.0",
+      "build": "yurt_0",
+      "url": "artifacts/pyzmq/26.4.0/pyzmq-26.4.0-yurt_0.yurtpkg",
+      "sha256": "429b9bb415b7f5a2c9a605e78ff042d75f82fa49e75140c191f67da81ad304df",
+      "size": 85943,
+      "signing": {
+        "subject": "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main",
+        "issuer": "https://token.actions.githubusercontent.com"
+      },
+      "depends": [
+        {
+          "name": "python",
+          "req": "^3.14"
+        }
+      ],
+      "yanked": false
+    }
+  ]
+}
