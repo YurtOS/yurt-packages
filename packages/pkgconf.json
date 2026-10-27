@@ -1,0 +1,18 @@
+{
+  "name": "pkgconf",
+  "versions": [
+    {
+      "version": "3.0.7",
+      "build": "yurt_0",
+      "url": "artifacts/pkgconf/3.0.7/pkgconf-3.0.7-yurt_0.yurtpkg",
+      "sha256": "ea7ee5c454041a54eeacef7632e12680af5a437d8583644a1571b642e5a77935",
+      "size": 119812,
+      "signing": {
+        "subject": "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main",
+        "issuer": "https://token.actions.githubusercontent.com"
+      },
+      "depends": [],
+      "yanked": false
+    }
+  ]
+}
