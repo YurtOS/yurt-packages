@@ -203,7 +203,30 @@ class PublishPackagePortsTest(unittest.TestCase):
         self.assertIn('chain="zlib bzip2 xz openssl libzmq sqlite cpython-base"', run)
         # python's interpreter links numpy's and pyzmq's extensions in.
         self.assertIn('python) ports="$chain pyzmq numpy" ;;', run)
+        # numpy and pyzmq build here, against cpython-base (their own
+        # build.sh outside port-cache.sh would look for cpython's full
+        # stage), and the package step only packs them.
+        self.assertIn('numpy) ports="$chain numpy" ;;', run)
+        self.assertIn('pyzmq) ports="$chain pyzmq" ;;', run)
         self.assertEqual(deps["env"]["YURT_PORT_CACHE"], "off")
+        self.assertEqual(
+            self.step("Build package artifact")["env"]["YURT_PACKAGE_SKIP_BUILD"],
+            "${{ (inputs.package == 'numpy' || inputs.package == 'pyzmq') && '1' || '0' }}",
+        )
+
+    def test_no_checkout_leaves_the_publish_token_in_a_clone(self) -> None:
+        for step in self.steps:
+            uses = step.get("uses", "")
+            with_ = step.get("with", {})
+            if uses.startswith("actions/checkout@") and "token" in with_:
+                self.assertIs(with_.get("persist-credentials"), False, step.get("name"))
+        commit = self.step("Commit repository update")
+        self.assertEqual(commit["env"]["PUSH_TOKEN"], "${{ secrets.PACKAGE_PUBLISH_TOKEN }}")
+        # The header is built after `set +x`, masked, and given to this push only.
+        run = commit["run"]
+        self.assertLess(run.index("set +x"), run.index("auth=$("))
+        self.assertIn('echo "::add-mask::$auth"', run)
+        self.assertIn('git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" push origin HEAD:main', run)
 
     def test_only_node_gets_a_token_for_its_build(self) -> None:
         env = self.step("Build package artifact")["env"]

@@ -76,6 +76,9 @@ jobs:
         with:
           path: yurt-packages
           token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+          # Read once here: no build step finds the token in a clone's
+          # git config (the commit step pushes with it explicitly).
+          persist-credentials: false
 
       - name: Check out yurt-ports
         uses: actions/checkout@v7
@@ -83,6 +86,9 @@ jobs:
           repository: YurtOS/yurt-ports
           path: yurt-ports
           token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+          # Read once here: no build step finds the token in a clone's
+          # git config (the commit step pushes with it explicitly).
+          persist-credentials: false
 
       - name: Check out yurt-pkg
         uses: actions/checkout@v7
@@ -90,6 +96,9 @@ jobs:
           repository: YurtOS/yurt-pkg
           path: yurt-pkg
           token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+          # Read once here: no build step finds the token in a clone's
+          # git config (the commit step pushes with it explicitly).
+          persist-credentials: false
 
       - name: Check out yurt-go
         if: inputs.package == 'gh' || inputs.package == 'go'
@@ -117,6 +126,9 @@ jobs:
           repository: YurtOS/yurt-clang
           path: sources/yurt-clang
           token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+          # Read once here: no build step finds the token in a clone's
+          # git config (the commit step pushes with it explicitly).
+          persist-credentials: false
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@1.97.1
@@ -143,6 +155,9 @@ jobs:
           repository: YurtOS/yurtos-kernel
           path: yurtos-kernel
           token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+          # Read once here: no build step finds the token in a clone's
+          # git config (the commit step pushes with it explicitly).
+          persist-credentials: false
 
       - name: Check out yurt-greet source
         if: inputs.package == 'yurt-greet'
@@ -151,6 +166,9 @@ jobs:
           repository: YurtOS/yurt-greet
           path: sources/yurt-greet
           token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+          # Read once here: no build step finds the token in a clone's
+          # git config (the commit step pushes with it explicitly).
+          persist-credentials: false
 
       - name: Install Binaryen
         run: |
@@ -227,13 +245,15 @@ jobs:
           case "$PACKAGE" in
             curl) ports="zlib openssl" ;;
             git) ports="zlib openssl curl" ;;
-            numpy | pyzmq) ports="$chain" ;;
+            numpy) ports="$chain numpy" ;;
+            pyzmq) ports="$chain pyzmq" ;;
             python) ports="$chain pyzmq numpy" ;;
             perl) ports="zlib bzip2" ;;
           esac
           # yurt-ports' port-cache.sh names each step (cpython-base is the
           # cpython port built in build/base) and runs it with the env the
-          # chain expects.
+          # chain expects: numpy and pyzmq build here, against cpython-base,
+          # and the package step only packs their stages.
           YURT_PORT_CACHE_RUN="$(yurt-ports/scripts/port-cache.sh begin)"
           export YURT_PORT_CACHE_RUN
           for step in $ports; do
@@ -253,8 +273,11 @@ jobs:
           HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}
           PORT: ${{ steps.port.outputs.dir }}
           # node's port fetches its pinned YurtOS/yurt-node release (private)
-          # with gh; nothing else reads it.
+          # with gh: the one build that gets the token in its environment.
           GH_TOKEN: ${{ inputs.package == 'node' && secrets.PACKAGE_PUBLISH_TOKEN || '' }}
+          # numpy and pyzmq were built by the dependency step (outside it,
+          # their build would not find cpython-base); pack those stages.
+          YURT_PACKAGE_SKIP_BUILD: ${{ (inputs.package == 'numpy' || inputs.package == 'pyzmq') && '1' || '0' }}
         run: |
           set -euxo pipefail
           "yurt-ports/ports/${PORT}/scripts/package.sh"
@@ -282,6 +305,8 @@ jobs:
       - name: Commit repository update
         env:
           PACKAGE: ${{ inputs.package }}
+          # The push credential, here only: the checkouts keep no token.
+          PUSH_TOKEN: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
         working-directory: yurt-packages
         run: |
           set -euxo pipefail
@@ -297,4 +322,7 @@ jobs:
             exit 0
           fi
           git commit -m "chore: publish ${PACKAGE} package"
-          git push
+          set +x
+          auth=$(printf 'x-access-token:%s' "$PUSH_TOKEN" | base64 -w0)
+          echo "::add-mask::$auth"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" push origin HEAD:main

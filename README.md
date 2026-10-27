@@ -39,8 +39,11 @@ Most packages build from the yurt-ports port of the same name. Exceptions:
   release of this repository; nothing is built.
 - `node` stages a release of the private YurtOS/yurt-node, which its port
   fetches with `gh` using `PACKAGE_PUBLISH_TOKEN`: that token needs read
-  access to YurtOS/yurt-node. Only that step gets it. The node binary is the
-  one the yurt-node release built, with the guest SDK named in its notes.
+  access to YurtOS/yurt-node. Of the build steps, only node's build gets it
+  in its environment; the checkouts keep no credential (`persist-credentials:
+  false`), and the commit step pushes with the token explicitly. The SDK
+  install step reads it too. The node binary is the one the yurt-node
+  release built, with the guest SDK named in its notes.
 - `perl` cross-builds with perl-cross, which needs a Linux runner (it does).
 - `sudo` is not offered: the image's `sudo` is what `sudo pkg install` runs
   under, and replacing it from a package is not a supported upgrade.
