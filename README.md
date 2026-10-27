@@ -29,8 +29,8 @@ this repository. It runs three jobs, each on a fresh runner:
   uploads only a git bundle of that commit.
 - `push` runs nothing but git on a checkout of the run's commit. It pushes the
   bundle's commit only if it is one commit on that checkout that adds the
-  package's archive under its version's directory (a regular file with the
-  build's sha256) and adds or changes `packages/<name>.json` (a regular file),
+  package's archive at the manifest's version and build (recorded by `build`
+  before it builds; a regular file with the build's sha256) and adds or changes `packages/<name>.json` (a regular file),
   and nothing else.
 
 Re-publishing the same package

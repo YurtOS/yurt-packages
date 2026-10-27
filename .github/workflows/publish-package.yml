@@ -63,7 +63,7 @@ permissions: {}
 
 # A real run commits a package to main. One at a time (rustup-dist's publish
 # shares the group), so two publishes never push at once. A queued run still
-# checks out the main it was dispatched on; its commit step rebases onto the
+# checks out the main it was dispatched on; its push step rebases onto the
 # main the first run left. (A group holds one pending run: a third dispatch
 # while one waits replaces the waiting one.) A dry run pushes nothing and
 # gets a group of its own, so it never replaces a waiting publish or holds
@@ -88,6 +88,8 @@ jobs:
     outputs:
       ports_sha: ${{ steps.ports.outputs.sha }}
       pkg_sha: ${{ steps.pkg.outputs.sha }}
+      version: ${{ steps.release.outputs.version }}
+      build: ${{ steps.release.outputs.build }}
       sha256: ${{ steps.archive.outputs.sha256 }}
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
     env:
@@ -97,7 +99,7 @@ jobs:
       # line") for every port with registry-ported crates, rtk among them.
       CARGO_TERM_COLOR: never
     steps:
-      # Only main publishes: the publish job pushes to main, and Release
+      # Only main publishes: the push job pushes to main, and Release
       # signs only what a Publish Package run on main committed. A dispatch
       # from another branch would put that branch's commits on main. A dry
       # run pushes nothing, so it may run from any branch.
@@ -166,6 +168,25 @@ jobs:
             --allow-new-build "$ALLOW_NEW_BUILD" \
             --allow-downgrade "$ALLOW_DOWNGRADE"
 
+      # Before any build code runs: the push job accepts only an archive at
+      # this version and build, the ones the policy just checked.
+      - name: Record the release
+        id: release
+        env:
+          PORT: ${{ inputs.package }}
+        run: |
+          set -euo pipefail
+          read -r version build < <(python3 -c '
+          import sys, tomllib
+          m = tomllib.load(open(sys.argv[1], "rb"))
+          print(m["version"], m["build"])
+          ' "yurt-ports/ports/${PORT}/yurt-pack.toml")
+          for value in "$version" "$build"; do
+            [[ "$value" =~ ^[A-Za-z0-9._+~-]+$ ]] || { echo "::error::unexpected version or build: $value"; exit 1; }
+          done
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+
       - name: Check out yurt-pkg
         uses: actions/checkout@v7
         with:
@@ -176,8 +197,8 @@ jobs:
           # git config.
           persist-credentials: false
 
-      # Before any build code runs: the publish job packs with this same
-      # yurt-pkg commit, not whatever main has when it starts.
+      # Before any build code runs: the publish job runs yurt-repo-ci from
+      # this same yurt-pkg commit, not whatever main has when it starts.
       - name: Record the yurt-pkg commit
         id: pkg
         run: |
@@ -642,18 +663,26 @@ jobs:
           path: ${{ runner.temp }}/handover
 
       # The commit must be one commit on this run's checkout that adds the
-      # package's archive at artifacts/<name>/<version>/ (a regular file with
-      # the sha256 the build job reported) and adds or changes
-      # packages/<name>.json (a regular file), and nothing else.
+      # package's archive at artifacts/<name>/<version>/<name>-<version>-
+      # <build>.yurtpkg (the manifest's version and build, which the build
+      # job recorded before building; a regular file with the sha256 the
+      # build job reported) and adds or changes packages/<name>.json (a
+      # regular file), and nothing else.
       # packages/<name>.json is yurt-repo-ci's output and is taken as is.
       - name: Verify the commit
         env:
           PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ needs.build.outputs.version }}
+          BUILD: ${{ needs.build.outputs.build }}
           SHA256: ${{ needs.build.outputs.sha256 }}
         working-directory: yurt-packages
         run: |
           set -euo pipefail
           [[ "$PACKAGE" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "::error::unexpected package name $PACKAGE"; exit 1; }
+          for value in "$VERSION" "$BUILD"; do
+            [[ "$value" =~ ^[A-Za-z0-9._+~-]+$ ]] || { echo "::error::unexpected version or build: $value"; exit 1; }
+          done
+          expected="artifacts/${PACKAGE}/${VERSION}/${PACKAGE}-${VERSION}-${BUILD}.yurtpkg"
           bundle="$RUNNER_TEMP/handover/commit.bundle"
           [ -f "$bundle" ] && [ ! -L "$bundle" ] || { echo "::error::no commit bundle was handed over"; exit 1; }
           start="$(git rev-parse HEAD)"
@@ -664,16 +693,11 @@ jobs:
             echo "::error::the hand-over must be one commit on $start"
             exit 1
           fi
-          # artifacts/<name>/<version>/<name>-<version>-<build>.yurtpkg
-          archive_re="^artifacts/${PACKAGE}/([^/]+)/${PACKAGE}-([^/]+)\.yurtpkg$"
           archive="" metadata=""
           while IFS=$'\t' read -r status path; do
-            if [[ "$status" = A && -z "$archive" && "$path" =~ $archive_re ]]; then
-              version="${BASH_REMATCH[1]}" rest="${BASH_REMATCH[2]}"
-              if [[ "$rest" = "$version"-?* ]]; then
-                archive="$path"
-                continue
-              fi
+            if [[ "$status" = A && "$path" = "$expected" ]]; then
+              archive="$path"
+              continue
             fi
             if [[ ( "$status" = A || "$status" = M ) && "$path" = "packages/${PACKAGE}.json" ]]; then
               metadata="$path"
