@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "index_version": 37,
-  "generated_at": "2026-10-27T12:09:57Z",
-  "expires_at": "2026-11-03T12:09:57Z",
+  "index_version": 38,
+  "generated_at": "2026-10-27T12:14:31Z",
+  "expires_at": "2026-11-03T12:14:31Z",
   "packages": {
     "busybox": {
       "sha256": "36e883bc8210d10fe6b15ecd5cc7e5528d34f44373341b04c37afcb68b5aaaf6",
@@ -110,8 +110,8 @@
       "url": "packages/yurt-greet.json"
     },
     "zlib": {
-      "sha256": "bc9b658de5a79de1fcc00c61767d0c83111e0e0d9d9f7da0ad5f12a78c5cc94f",
-      "size": 506,
+      "sha256": "1ff841f4dee6f53df1b88b78453e1ae58a7778fd35de96a01901fb757f4bf6a2",
+      "size": 981,
       "url": "packages/zlib.json"
     },
     "zsh": {
