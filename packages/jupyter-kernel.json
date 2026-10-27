@@ -1,0 +1,27 @@
+{
+  "name": "jupyter-kernel",
+  "versions": [
+    {
+      "version": "0.0.1",
+      "build": "yurt_0",
+      "url": "artifacts/jupyter-kernel/0.0.1/jupyter-kernel-0.0.1-yurt_0.yurtpkg",
+      "sha256": "c8e575a68c03a8e4b8217fd4c5cc76aa202e80c0c5944b6e095855e6f99a25d4",
+      "size": 9533947,
+      "signing": {
+        "subject": "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main",
+        "issuer": "https://token.actions.githubusercontent.com"
+      },
+      "depends": [
+        {
+          "name": "python",
+          "req": "^3.14"
+        },
+        {
+          "name": "pyzmq",
+          "req": "^26.4"
+        }
+      ],
+      "yanked": false
+    }
+  ]
+}
