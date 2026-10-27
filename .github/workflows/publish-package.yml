@@ -403,11 +403,14 @@ jobs:
       - name: The build job's commits are well-formed
         env:
           PORTS_SHA: ${{ needs.build.outputs.ports_sha }}
+          REQUESTED_PORTS_SHA: ${{ inputs.ports_sha }}
           PKG_SHA: ${{ needs.build.outputs.pkg_sha }}
         run: |
           set -euo pipefail
           [[ "$PORTS_SHA" =~ ^[0-9a-f]{40}$ ]] ||
             { echo "::error::the build job's yurt-ports commit is not a 40-hex SHA"; exit 1; }
+          [[ -z "$REQUESTED_PORTS_SHA" || "$PORTS_SHA" = "$REQUESTED_PORTS_SHA" ]] ||
+            { echo "::error::the build job built yurt-ports $PORTS_SHA, not the requested $REQUESTED_PORTS_SHA"; exit 1; }
           [[ "$PKG_SHA" =~ ^[0-9a-f]{40}$ ]] ||
             { echo "::error::the build job's yurt-pkg commit is not a 40-hex SHA"; exit 1; }
 
@@ -448,8 +451,18 @@ jobs:
           repository: YurtOS/yurt-pkg
           path: yurt-pkg
           ref: ${{ needs.build.outputs.pkg_sha }}
+          fetch-depth: 0
           token: ${{ secrets.PACKAGE_READ_TOKEN }}
           persist-credentials: false
+
+      # The build job's outputs are untrusted (its code could forge them), so
+      # as with yurt-ports: only a commit yurt-pkg main has had runs here.
+      - name: The yurt-pkg commit is on main
+        working-directory: yurt-pkg
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor HEAD origin/main ||
+            { echo "::error::yurt-pkg $(git rev-parse HEAD) is not in main's history"; exit 1; }
 
       # No Rust cache: this job builds yurt-repo-ci from a clean ~/.cargo
       # and target/, so nothing a build job left behind runs here.
@@ -461,6 +474,7 @@ jobs:
         env:
           ARTIFACT_ID: ${{ needs.build.outputs.artifact_id }}
         run: |
+          set -euo pipefail
           [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]] || { echo "::error::the build job's artifact id is not all digits"; exit 1; }
           echo "artifact_id=$ARTIFACT_ID" >> "$GITHUB_OUTPUT"
 
@@ -507,7 +521,7 @@ jobs:
           PORT: ${{ inputs.package }}
         run: |
           set -euxo pipefail
-          cargo run --manifest-path yurt-pkg/Cargo.toml -p yurt-repo-ci -- \
+          cargo run --locked --manifest-path yurt-pkg/Cargo.toml -p yurt-repo-ci -- \
             assert-not-published \
             --repo-root yurt-packages \
             --manifest "yurt-ports/ports/${PORT}/yurt-pack.toml"
@@ -519,7 +533,7 @@ jobs:
         run: |
           set -euxo pipefail
           generated_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-          cargo run --manifest-path yurt-pkg/Cargo.toml -p yurt-repo-ci -- \
+          cargo run --locked --manifest-path yurt-pkg/Cargo.toml -p yurt-repo-ci -- \
             publish-local \
             --repo-root yurt-packages \
             --artifact "$ARTIFACT" \
@@ -594,6 +608,13 @@ jobs:
         working-directory: yurt-packages
         run: |
           set -euo pipefail
+          # Earlier steps ran yurt-repo-ci (and its crates' build scripts)
+          # with write access to this clone's .git: no hook or fsmonitor
+          # command from it runs while the token is in the env. Command-line
+          # scope beats the repository's own config.
+          export GIT_CONFIG_COUNT=2
+          export GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null
+          export GIT_CONFIG_KEY_1=core.fsmonitor GIT_CONFIG_VALUE_1=false
           if [ ! -s "$RUNNER_TEMP/publish-start" ]; then
             echo "Nothing was committed; nothing to push."
             exit 0

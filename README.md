@@ -24,7 +24,7 @@ from `YurtOS/yurt-ports`, builds it, and uploads only the `.yurtpkg` (with its
 sha256). `publish`, on a fresh runner, checks that archive against the port's
 manifest at the same yurt-ports commit, runs
 `yurt-repo-ci publish-local --reject-existing` from the yurt-pkg commit the
-build used, commits the archive and its
+build used (which must be on yurt-pkg main), commits the archive and its
 `packages/<name>.json` (nothing else may be staged), and pushes. Re-publishing the same package
 `version`/`build` is expected to fail before repository files are modified.
 It never commits `index.json` or a bundle: `Release` does that (below).
@@ -314,14 +314,17 @@ The five-job split keeps code from `tooling_ref` away from
 `push` is the only job that can read it. `push` restores no cache, and it
 accepts only the artifact whose digests `publish` computed.
 
-It does **not** cover `PACKAGE_PUBLISH_TOKEN`:
+It does **not** cover `PACKAGE_PUBLISH_TOKEN`, which `publish-package.yml`
+guards on its own:
 - Tooling code in `emit` and `check` runs on the runner as the runner user.
   It can act with that job's Actions runtime token, and a dispatch on `main`
   writes cache entries scoped to `main`.
 - `publish-package.yml`'s `build` job restores and saves its own cache
   (`Swatinem/rust-cache`, key `publish-package-build`), with read-only
   credentials. Its `publish` job, the only one that sees
-  `PACKAGE_PUBLISH_TOKEN`, restores no cache.
+  `PACKAGE_PUBLISH_TOKEN`, restores no cache. The code that job runs is
+  yurt-repo-ci from a yurt-pkg commit on main (built with `--locked`), with
+  its crates; its push step runs no hook from the clone.
 
 Also accepted: tooling code can reach the read-only `YURT_RUST_READ_TOKEN` in
 the jobs it runs in.
