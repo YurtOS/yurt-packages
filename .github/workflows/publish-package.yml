@@ -46,10 +46,11 @@ on:
 permissions:
   contents: write
 
-# Every run commits the package index to main. One run at a time, so a
-# second dispatch starts from the first one's commit instead of racing its
-# push. (A group holds one pending run: a third dispatch while one waits
-# replaces the waiting one.)
+# Every run commits a package to main. One run at a time, so two publishes
+# never push at once. A queued run still checks out the main it was
+# dispatched on; its commit step rebases onto the main the first run left.
+# (A group holds one pending run: a third dispatch while one waits replaces
+# the waiting one.)
 concurrency:
   group: publish-package
   cancel-in-progress: false
@@ -332,6 +333,15 @@ jobs:
       # package metadata are committed here. release.yml, which this run's
       # completion triggers, regenerates and signs index.json and signs the
       # new archive, so main never carries an unsigned index or a placeholder.
+      #
+      # Other writers push to main while the build runs (a merged pull
+      # request, a Release run). This commit touches only its own package's
+      # files, so it is rebased onto a main that moved, and the push retried,
+      # unless main changed one of that package's files since the checkout:
+      # its packages/<name>.json, or anything under artifacts/<name>/ other
+      # than the signature bundles of releases already there. That is a real
+      # conflict (another publish of the package, or its removal), and the run
+      # fails without pushing, as release.yml does for its own paths.
       - name: Commit repository update
         env:
           PACKAGE: ${{ inputs.package }}
@@ -352,7 +362,61 @@ jobs:
             exit 0
           fi
           git commit -m "chore: publish ${PACKAGE} package"
+          start="$(git rev-parse HEAD^)"
+          # The paths a moved main must not have touched: everything this
+          # commit adds, each committed package's metadata and artifacts
+          # directory, and the bundle of each archive it adds.
+          scope=()
+          own_bundles="$RUNNER_TEMP/publish-own-bundles"
+          : > "$own_bundles"
+          while IFS= read -r path; do
+            scope+=("$path")
+            case "$path" in
+              packages/*.json)
+                name="${path#packages/}"
+                name="${name%.json}"
+                scope+=("artifacts/$name")
+                ;;
+              *.yurtpkg)
+                scope+=("$path.bundle")
+                echo "$path.bundle" >> "$own_bundles"
+                ;;
+            esac
+          done < <(git diff --name-only HEAD^ HEAD)
+          # The index.json and placeholder bundles publish-local left are not
+          # committed; a rebase needs a clean tree.
+          git reset -q --hard HEAD
           set +x
           auth=$(printf 'x-access-token:%s' "$PUSH_TOKEN" | base64 -w0)
           echo "::add-mask::$auth"
-          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" push origin HEAD:main
+          attempts=5
+          for attempt in $(seq "$attempts"); do
+            git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" fetch origin main
+            # A push that landed although the client saw it fail.
+            if git merge-base --is-ancestor HEAD origin/main; then
+              echo "main already has $(git rev-parse HEAD) (attempt $attempt)"
+              exit 0
+            fi
+            changed="$(git --literal-pathspecs diff --name-only "$start" origin/main -- "${scope[@]}")"
+            # Bundles another Release run signed for releases already there
+            # are not a conflict; a bundle for one of this commit's archives is.
+            moved="$( { grep -v '\.bundle$' <<<"$changed" || true; grep -x -F -f "$own_bundles" <<<"$changed" || true; } | sed '/^$/d')"
+            if [ -n "$moved" ]; then
+              echo "::error::main changed this package's files since $start; not pushing:"
+              echo "$moved"
+              exit 1
+            fi
+            if ! git rebase origin/main; then
+              git rebase --abort
+              echo "::error::could not rebase onto main ($(git rev-parse origin/main)); not pushing"
+              exit 1
+            fi
+            if git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" push origin HEAD:main; then
+              echo "pushed $(git rev-parse HEAD) onto main (attempt $attempt)"
+              exit 0
+            fi
+            echo "push attempt $attempt of $attempts failed; refetching main"
+            sleep $((attempt * 5))
+          done
+          echo "::error::$attempts push attempts failed (main kept moving, or the push itself fails; see above)"
+          exit 1
