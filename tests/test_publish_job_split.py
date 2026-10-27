@@ -77,6 +77,7 @@ class JobSplitTest(unittest.TestCase):
             self.build["outputs"],
             {
                 "ports_sha": "${{ steps.ports.outputs.sha }}",
+                "pkg_sha": "${{ steps.pkg.outputs.sha }}",
                 "sha256": "${{ steps.archive.outputs.sha256 }}",
                 "artifact_id": "${{ steps.upload.outputs.artifact-id }}",
             },
@@ -100,6 +101,32 @@ class JobSplitTest(unittest.TestCase):
         self.assertEqual(checkout["with"]["ref"], "${{ needs.build.outputs.ports_sha }}")
         names = self.names(self.publish)
         self.assertLess(names.index("The yurt-ports commit is on main"), names.index("Publish package metadata"))
+
+    def test_the_publish_job_uses_the_yurt_pkg_commit_the_build_used(self) -> None:
+        # Recorded straight after the build job's checkout, before any build code runs.
+        names = self.names(self.build)
+        record = self.build["steps"][names.index("Check out yurt-pkg") + 1]
+        self.assertEqual(record["id"], "pkg")
+        self.assertIn('echo "sha=$(git -C yurt-pkg rev-parse HEAD)" >> "$GITHUB_OUTPUT"', record["run"])
+        checkout = next(step for step in self.publish["steps"] if step.get("name") == "Check out yurt-pkg")
+        self.assertEqual(checkout["with"]["ref"], "${{ needs.build.outputs.pkg_sha }}")
+        check = next(step for step in self.publish["steps"] if step.get("name") == "The build job's commits are well-formed")
+        self.assertEqual(check["env"]["PKG_SHA"], "${{ needs.build.outputs.pkg_sha }}")
+        self.assertIn('[[ "$PKG_SHA" =~ ^[0-9a-f]{40}$ ]]', check["run"])
+        names = self.names(self.publish)
+        self.assertLess(names.index("The build job's commits are well-formed"), names.index("Check out yurt-pkg"))
+
+    def test_a_dry_run_never_takes_the_publish_group(self) -> None:
+        # A group holds one pending run: a dry run in the shared group would replace a
+        # waiting real publish (or rustup-dist publish), and a clang dry run would hold it
+        # for hours. Each dry run gets a group of its own.
+        self.assertEqual(
+            self.wf["concurrency"],
+            {
+                "group": "${{ inputs.dry_run && format('publish-package-dry-run-{0}', github.run_id) || 'publish-package' }}",
+                "cancel-in-progress": False,
+            },
+        )
 
     def test_the_commit_allows_only_the_package_s_two_paths(self) -> None:
         commit = next(step for step in self.publish["steps"] if step.get("name") == "Commit repository update")

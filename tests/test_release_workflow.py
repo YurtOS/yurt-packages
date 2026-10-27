@@ -88,7 +88,7 @@ class ReleaseWorkflowTest(unittest.TestCase):
     def test_own_concurrency_group(self) -> None:
         # Sharing publish-package's group would let a waiting Release replace a waiting publish.
         self.assertEqual(self.wf["concurrency"], {"group": "release", "cancel-in-progress": False})
-        self.assertEqual(load(PUBLISH)["concurrency"]["group"], "publish-package")
+        self.assertIn("|| 'publish-package' }}", load(PUBLISH)["concurrency"]["group"])
 
     def test_push_refuses_a_main_that_moved_under_signed_paths(self) -> None:
         text = self.run_text()
