@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "index_version": 26,
-  "generated_at": "2026-10-27T10:37:54Z",
-  "expires_at": "2026-11-03T10:37:54Z",
+  "index_version": 27,
+  "generated_at": "2026-10-27T10:41:36Z",
+  "expires_at": "2026-11-03T10:41:36Z",
   "packages": {
     "busybox": {
       "sha256": "36e883bc8210d10fe6b15ecd5cc7e5528d34f44373341b04c37afcb68b5aaaf6",
@@ -28,6 +28,11 @@
       "sha256": "90145fac920be34a4657127dcc70feece80cfaa86b55542c13b4d66036e688dc",
       "size": 526,
       "url": "packages/ncurses.json"
+    },
+    "node": {
+      "sha256": "3d89c640ab4e502402a2aa3f4386896a08f6ee6544687dc8e2b673d45fec75f0",
+      "size": 525,
+      "url": "packages/node.json"
     },
     "numpy": {
       "sha256": "bedd4149fe00c17fc3e31190b6761787ebf65138abcadd3cb8588b38aecc3aa3",
