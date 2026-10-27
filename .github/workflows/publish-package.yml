@@ -57,8 +57,10 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    # The slowest run seen took 19.9 minutes; a hang fails here, not at 6 hours.
-    timeout-minutes: 45
+    # A hang fails here, not at GitHub's 6-hour default. 45 minutes: the
+    # slowest of the first 39 runs took 19.9. clang builds LLVM twice
+    # (clang+lld, no compiler cache), which takes hours on a hosted runner.
+    timeout-minutes: ${{ inputs.package == 'clang' && 240 || 45 }}
     env:
       # dtolnay/rust-toolchain exports CARGO_TERM_COLOR=always when it is
       # unset. The guest SDK's cargo-yurt parses `cargo tree` output, and
