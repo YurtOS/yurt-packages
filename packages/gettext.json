@@ -1,0 +1,18 @@
+{
+  "name": "gettext",
+  "versions": [
+    {
+      "version": "1.0.0",
+      "build": "yurt_0",
+      "url": "artifacts/gettext/1.0.0/gettext-1.0.0-yurt_0.yurtpkg",
+      "sha256": "274453a940c34e0c0843bf57d68c8c5dffa195c1457df8bb07806b839f0042fc",
+      "size": 7280678,
+      "signing": {
+        "subject": "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main",
+        "issuer": "https://token.actions.githubusercontent.com"
+      },
+      "depends": [],
+      "yanked": false
+    }
+  ]
+}
