@@ -26,6 +26,15 @@ this repository. The workflow checks out the source-light port from
 `version`/`build` is expected to fail before repository files are modified.
 It never commits `index.json` or a bundle: `Release` does that (below).
 
+Main may move while a package builds (a merged pull request, a `Release`
+run). The commit step then rebases its commit onto the new main and pushes
+again, up to five times. It refuses instead, without pushing, when main changed
+the package's own files since the run's checkout: `packages/<name>.json`,
+anything under `artifacts/<name>/` other than the signature bundles of releases
+already there, or the bundle of the archive it adds. Such a change is another
+publish of the same package, or its removal; dispatch the publish again on the
+new main if it should still go out.
+
 **Publish when the version changes.** Archives are committed to git, so every
 publish grows the repository for good (the Python set adds about 23 MB). Before
 anything is built, the workflow's "Publish only a new version" step
