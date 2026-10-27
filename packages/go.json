@@ -1,0 +1,23 @@
+{
+  "name": "go",
+  "versions": [
+    {
+      "version": "1.28.0-devel",
+      "build": "1",
+      "url": "artifacts/go/1.28.0-devel/go-1.28.0-devel-1.yurtpkg",
+      "sha256": "4f66ae96ec1fb2ad21bc0ddf2240234cdae26861751677ec6180b9d603736633",
+      "size": 59382010,
+      "signing": {
+        "subject": "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main",
+        "issuer": "https://token.actions.githubusercontent.com"
+      },
+      "depends": [
+        {
+          "name": "ca-certificates",
+          "req": "^2026.9.25"
+        }
+      ],
+      "yanked": false
+    }
+  ]
+}
