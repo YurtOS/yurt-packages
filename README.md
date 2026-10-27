@@ -23,7 +23,8 @@ this repository. It runs two jobs. `build` checks out the source-light port
 from `YurtOS/yurt-ports`, builds it, and uploads only the `.yurtpkg` (with its
 sha256). `publish`, on a fresh runner, checks that archive against the port's
 manifest at the same yurt-ports commit, runs
-`yurt-repo-ci publish-local --reject-existing`, commits the archive and its
+`yurt-repo-ci publish-local --reject-existing` from the yurt-pkg commit the
+build used, commits the archive and its
 `packages/<name>.json` (nothing else may be staged), and pushes. Re-publishing the same package
 `version`/`build` is expected to fail before repository files are modified.
 It never commits `index.json` or a bundle: `Release` does that (below).
@@ -77,7 +78,9 @@ main. A dry run may be dispatched from any branch, which is how a change to
 this workflow is tried before it merges. `Release` follows only runs on main,
 dry or not: one after a dry run on main finds nothing new to sign, but still
 commits a renewed index to main. Dispatch dry runs from a branch to avoid
-that.
+that. Real publishes run one at a time in the `publish-package` concurrency
+group; each dry run gets a group of its own, so it never replaces a waiting
+publish or holds the group for a long build.
 
 Each package builds from the yurt-ports port of the same name, at yurt-ports
 main's head or at the `ports_sha` input (a commit in main's history). A real

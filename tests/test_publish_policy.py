@@ -296,8 +296,6 @@ class DowngradeTest(PolicyCase):
 class PolicyWorkflowTest(unittest.TestCase):
     def setUp(self) -> None:
         self.wf = yaml.safe_load(PUBLISH.read_text())
-        self.steps = self.wf["jobs"]["publish"]["steps"]
-        self.names = [step.get("name") for step in self.steps]
 
     def test_the_input_defaults_to_new_versions_only(self) -> None:
         trigger = self.wf.get("on", self.wf.get(True))

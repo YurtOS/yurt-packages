@@ -61,13 +61,15 @@ on:
 # main uses PACKAGE_PUBLISH_TOKEN, in the publish job's last step only.
 permissions: {}
 
-# Every run commits a package to main. One run at a time, so two publishes
-# never push at once. A queued run still checks out the main it was
-# dispatched on; its commit step rebases onto the main the first run left.
-# (A group holds one pending run: a third dispatch while one waits replaces
-# the waiting one.)
+# A real run commits a package to main. One at a time (rustup-dist's publish
+# shares the group), so two publishes never push at once. A queued run still
+# checks out the main it was dispatched on; its commit step rebases onto the
+# main the first run left. (A group holds one pending run: a third dispatch
+# while one waits replaces the waiting one.) A dry run pushes nothing and
+# gets a group of its own, so it never replaces a waiting publish or holds
+# the group for a long build.
 concurrency:
-  group: publish-package
+  group: ${{ inputs.dry_run && format('publish-package-dry-run-{0}', github.run_id) || 'publish-package' }}
   cancel-in-progress: false
 
 jobs:
@@ -85,6 +87,7 @@ jobs:
     timeout-minutes: ${{ inputs.package == 'clang' && 360 || 45 }}
     outputs:
       ports_sha: ${{ steps.ports.outputs.sha }}
+      pkg_sha: ${{ steps.pkg.outputs.sha }}
       sha256: ${{ steps.archive.outputs.sha256 }}
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
     env:
@@ -172,6 +175,14 @@ jobs:
           # Read once here: no build step finds the token in a clone's
           # git config.
           persist-credentials: false
+
+      # Before any build code runs: the publish job packs with this same
+      # yurt-pkg commit, not whatever main has when it starts.
+      - name: Record the yurt-pkg commit
+        id: pkg
+        run: |
+          set -euo pipefail
+          echo "sha=$(git -C yurt-pkg rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Check out yurt-go
         if: inputs.package == 'gh' || inputs.package == 'go'
@@ -389,13 +400,16 @@ jobs:
           path: yurt-packages
           persist-credentials: false
 
-      - name: The yurt-ports commit is well-formed
+      - name: The build job's commits are well-formed
         env:
           PORTS_SHA: ${{ needs.build.outputs.ports_sha }}
+          PKG_SHA: ${{ needs.build.outputs.pkg_sha }}
         run: |
           set -euo pipefail
           [[ "$PORTS_SHA" =~ ^[0-9a-f]{40}$ ]] ||
             { echo "::error::the build job's yurt-ports commit is not a 40-hex SHA"; exit 1; }
+          [[ "$PKG_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+            { echo "::error::the build job's yurt-pkg commit is not a 40-hex SHA"; exit 1; }
 
       # Only to read the port's yurt-pack.toml; nothing from it runs.
       - name: Check out yurt-ports
@@ -433,6 +447,7 @@ jobs:
         with:
           repository: YurtOS/yurt-pkg
           path: yurt-pkg
+          ref: ${{ needs.build.outputs.pkg_sha }}
           token: ${{ secrets.PACKAGE_READ_TOKEN }}
           persist-credentials: false
 
@@ -574,7 +589,7 @@ jobs:
         if: ${{ !inputs.dry_run }}
         env:
           # The push credential, here only: the checkouts keep no token, and
-          # no earlier step of either job sees it.
+          # no earlier step of either job has it in its env.
           PUSH_TOKEN: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
         working-directory: yurt-packages
         run: |
