@@ -103,7 +103,15 @@ class PolicyTest(unittest.TestCase):
         self.assertIn("has no build", out)
 
     def test_the_committed_repository(self) -> None:
-        # Against this checkout's own packages/zlib.json (1.3.1 builds 1 and yurt_1).
+        # Against this checkout's own packages/zlib.json, whatever it holds by then: a published
+        # release, another build of its version, and a version above every published one.
+        published = json.loads((ROOT / "packages" / "zlib.json").read_text())["versions"]
+        version, build = published[-1]["version"], published[-1]["build"]
+        new_build = build + "-new"
+        new_version = ".".join(str(int(part) + 1) for part in max(
+            tuple(int(p) for p in entry["version"].split("-")[0].split(".")) for entry in published
+        ))
+
         def check(version: str, build: str, allow: bool) -> int:
             self.port("zlib", version, build)
             return subprocess.run(
@@ -112,10 +120,10 @@ class PolicyTest(unittest.TestCase):
                 capture_output=True,
             ).returncode
 
-        self.assertEqual(check("1.3.1", "yurt_1", True), 1)
-        self.assertEqual(check("1.3.1", "yurt_2", False), 1)
-        self.assertEqual(check("1.3.1", "yurt_2", True), 0)
-        self.assertEqual(check("1.3.2", "yurt_0", False), 0)
+        self.assertEqual(check(version, build, True), 1)
+        self.assertEqual(check(version, new_build, False), 1)
+        self.assertEqual(check(version, new_build, True), 0)
+        self.assertEqual(check(new_version, "yurt_0", False), 0)
 
 
 class PolicyWorkflowTest(unittest.TestCase):
