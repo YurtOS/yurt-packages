@@ -175,5 +175,49 @@ class PublishPackageBuildEnvTest(unittest.TestCase):
             self.assertNotIn("CARGO_TERM_COLOR", step.get("run", ""), step.get("name"))
 
 
+
+class PublishPackagePortsTest(unittest.TestCase):
+    """Which yurt-ports directory and which dependency stages each package builds from."""
+
+    def setUp(self) -> None:
+        self.wf = load(PUBLISH)
+        self.steps = self.wf["jobs"]["publish"]["steps"]
+
+    def step(self, name: str) -> dict:
+        return next(step for step in self.steps if step.get("name") == name)
+
+    def test_python_is_built_by_the_cpython_port(self) -> None:
+        resolve = self.step("Resolve the port")["run"]
+        self.assertIn("python) echo \"dir=cpython\"", resolve)
+        self.assertEqual(self.steps.index(self.step("Resolve the port")), 0)
+        for name in ["Reject duplicate package version", "Build package artifact", "Publish package metadata"]:
+            step = self.step(name)
+            self.assertEqual(step["env"]["PORT"], "${{ steps.port.outputs.dir }}", name)
+            self.assertNotIn("inputs.package }}/", step["run"], name)
+
+    def test_the_cpython_chain_is_built_before_its_packages(self) -> None:
+        deps = self.step("Build dependency stages")
+        for package in ["python", "numpy", "pyzmq", "perl", "curl", "git"]:
+            self.assertIn(f"inputs.package == '{package}'", deps["if"])
+        run = deps["run"]
+        self.assertIn('chain="zlib bzip2 xz openssl libzmq sqlite cpython-base"', run)
+        # python's interpreter links numpy's and pyzmq's extensions in.
+        self.assertIn('python) ports="$chain pyzmq numpy" ;;', run)
+        self.assertEqual(deps["env"]["YURT_PORT_CACHE"], "off")
+
+    def test_only_node_gets_a_token_for_its_build(self) -> None:
+        env = self.step("Build package artifact")["env"]
+        self.assertEqual(env["GH_TOKEN"], "${{ inputs.package == 'node' && secrets.PACKAGE_PUBLISH_TOKEN || '' }}")
+
+    def test_new_packages_are_choices_and_sudo_is_not(self) -> None:
+        # PyYAML reads the `on:` key as True.
+        trigger = self.wf.get("on", self.wf.get(True))
+        options = trigger["workflow_dispatch"]["inputs"]["package"]["options"]
+        for package in ["python", "numpy", "pyzmq", "jupyter-kernel", "node", "gemini-cli", "perl", "make", "zstd", "pkgconf"]:
+            self.assertIn(package, options)
+        # The image's bootstrap: an install of sudo would replace the sudo it runs under.
+        self.assertNotIn("sudo", options)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -25,6 +25,16 @@ on:
           - rtk
           - gh
           - go
+          - python
+          - numpy
+          - pyzmq
+          - jupyter-kernel
+          - node
+          - gemini-cli
+          - perl
+          - make
+          - zstd
+          - pkgconf
 
 permissions:
   contents: write
@@ -47,6 +57,20 @@ jobs:
       # line") for every port with registry-ported crates, rtk among them.
       CARGO_TERM_COLOR: never
     steps:
+      # The yurt-ports directory a package is built from: its name, except
+      # python, whose port is cpython (the port builds the interpreter, the
+      # package is what a user installs).
+      - name: Resolve the port
+        id: port
+        env:
+          PACKAGE: ${{ inputs.package }}
+        run: |
+          set -euo pipefail
+          case "$PACKAGE" in
+            python) echo "dir=cpython" >> "$GITHUB_OUTPUT" ;;
+            *) echo "dir=$PACKAGE" >> "$GITHUB_OUTPUT" ;;
+          esac
+
       - name: Check out yurt-packages
         uses: actions/checkout@v7
         with:
@@ -104,12 +128,14 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Reject duplicate package version
+        env:
+          PORT: ${{ steps.port.outputs.dir }}
         run: |
           set -euxo pipefail
           cargo run --manifest-path yurt-pkg/Cargo.toml -p yurt-repo-ci -- \
             assert-not-published \
             --repo-root yurt-packages \
-            --manifest "yurt-ports/ports/${{ inputs.package }}/yurt-pack.toml"
+            --manifest "yurt-ports/ports/${PORT}/yurt-pack.toml"
 
       - name: Check out yurtos-kernel
         uses: actions/checkout@v7
@@ -152,6 +178,16 @@ jobs:
         with:
           deno-version: v2.x
 
+      # The cpython chain (python, numpy, pyzmq) cross-builds with a host
+      # python of the target's minor version (cython, meson), as yurt-ports'
+      # release-playground-image.yml does.
+      - name: Set up the host Python the cpython chain builds with
+        id: host-python
+        if: inputs.package == 'python' || inputs.package == 'numpy' || inputs.package == 'pyzmq'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
       - name: Install Yurt guest SDK
         working-directory: yurtos-kernel
         env:
@@ -167,20 +203,41 @@ jobs:
         run: scripts/build-rust-std.sh --rust "$(rustc --version | awk '{print $2}')"
 
       - name: Build dependency stages
-        if: inputs.package == 'curl' || inputs.package == 'git'
+        if: >-
+          inputs.package == 'curl' || inputs.package == 'git' ||
+          inputs.package == 'python' || inputs.package == 'numpy' ||
+          inputs.package == 'pyzmq' || inputs.package == 'perl'
         env:
           YURT_KERNEL_ROOT: ${{ github.workspace }}/yurtos-kernel
           PACKAGE: ${{ inputs.package }}
+          HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}
+          # Every step builds from source here; nothing is read from or
+          # stored in a port cache.
+          YURT_PORT_CACHE: "off"
         run: |
           set -euxo pipefail
           # curl and git link these ports' staged static libraries; git's
-          # curl stage itself needs the zlib and OpenSSL stages.
+          # curl stage itself needs the zlib and OpenSSL stages. The cpython
+          # chain is yurt-ports' scripts/build-playground-image.sh order:
+          # numpy and pyzmq compile against cpython-base (the interpreter
+          # without them), and python's interpreter (built by the cpython
+          # port's package.sh) links numpy's and pyzmq's extensions in. perl
+          # links zlib and bzip2.
+          chain="zlib bzip2 xz openssl libzmq sqlite cpython-base"
           case "$PACKAGE" in
             curl) ports="zlib openssl" ;;
             git) ports="zlib openssl curl" ;;
+            numpy | pyzmq) ports="$chain" ;;
+            python) ports="$chain pyzmq numpy" ;;
+            perl) ports="zlib bzip2" ;;
           esac
-          for port in $ports; do
-            "yurt-ports/ports/${port}/scripts/build.sh"
+          # yurt-ports' port-cache.sh names each step (cpython-base is the
+          # cpython port built in build/base) and runs it with the env the
+          # chain expects.
+          YURT_PORT_CACHE_RUN="$(yurt-ports/scripts/port-cache.sh begin)"
+          export YURT_PORT_CACHE_RUN
+          for step in $ports; do
+            yurt-ports/scripts/port-cache.sh build "$step"
           done
 
       - name: Build package artifact
@@ -193,22 +250,27 @@ jobs:
           YURT_PKG_SOURCE: ${{ github.workspace }}/yurt-pkg
           YURT_CLANG_SOURCE: ${{ github.workspace }}/sources/yurt-clang
           YURT_GO_SOURCE: ${{ github.workspace }}/sources/yurt-go
+          HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}
+          PORT: ${{ steps.port.outputs.dir }}
+          # node's port fetches its pinned YurtOS/yurt-node release (private)
+          # with gh; nothing else reads it.
+          GH_TOKEN: ${{ inputs.package == 'node' && secrets.PACKAGE_PUBLISH_TOKEN || '' }}
         run: |
           set -euxo pipefail
-          "yurt-ports/ports/${{ inputs.package }}/scripts/package.sh"
+          "yurt-ports/ports/${PORT}/scripts/package.sh"
 
       - name: Publish package metadata
         env:
-          PACKAGE: ${{ inputs.package }}
+          PORT: ${{ steps.port.outputs.dir }}
         run: |
           set -euxo pipefail
           generated_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-          artifact="$(ls "yurt-ports/ports/${PACKAGE}/build/dist/"*.yurtpkg)"
+          artifact="$(ls "yurt-ports/ports/${PORT}/build/dist/"*.yurtpkg)"
           cargo run --manifest-path yurt-pkg/Cargo.toml -p yurt-repo-ci -- \
             publish-local \
             --repo-root yurt-packages \
             --artifact "$artifact" \
-            --manifest "yurt-ports/ports/${PACKAGE}/yurt-pack.toml" \
+            --manifest "yurt-ports/ports/${PORT}/yurt-pack.toml" \
             --generated-at "$generated_at" \
             --reject-existing
 

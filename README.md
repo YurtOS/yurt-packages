@@ -26,6 +26,25 @@ this repository. The workflow checks out the source-light port from
 `version`/`build` is expected to fail before repository files are modified.
 It never commits `index.json` or a bundle: `Release` does that (below).
 
+Most packages build from the yurt-ports port of the same name. Exceptions:
+
+- `python` is built by the `cpython` port. Its interpreter has NumPy's and
+  pyzmq's C extensions linked in, so the run first builds the cpython chain
+  (zlib, bzip2, xz, OpenSSL, libzmq, SQLite, the interpreter they compile
+  against, pyzmq, numpy) with yurt-ports' `scripts/port-cache.sh`, cache off.
+  `numpy` and `pyzmq` build the same chain up to that interpreter. Publish the
+  three from the same yurt-ports commit: the `numpy` and `pyzmq` packages hold
+  only the Python files that go with that interpreter's extensions.
+- `jupyter-kernel` fetches the pinned, public `jupyter-payload-v0.0.1`
+  release of this repository; nothing is built.
+- `node` stages a release of the private YurtOS/yurt-node, which its port
+  fetches with `gh` using `PACKAGE_PUBLISH_TOKEN`: that token needs read
+  access to YurtOS/yurt-node. Only that step gets it. The node binary is the
+  one the yurt-node release built, with the guest SDK named in its notes.
+- `perl` cross-builds with perl-cross, which needs a Linux runner (it does).
+- `sudo` is not offered: the image's `sudo` is what `sudo pkg install` runs
+  under, and replacing it from a package is not a supported upgrade.
+
 For local end-to-end loops, `yurt-repo-ci publish-local` is the CI stand-in. It
 copies a built `.yurtpkg` into `artifacts/`, regenerates package metadata and
 `index.json`, and writes placeholder bundles so `pkg --features test-fixtures`
