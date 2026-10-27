@@ -195,8 +195,8 @@ class JobSplitTest(unittest.TestCase):
         run = commit["run"]
         self.assertLess(run.index('allowed="$('), run.index("git commit"))
 
-    def test_both_jobs_refuse_a_real_publish_off_main(self) -> None:
-        for job in [self.build, self.publish]:
+    def test_every_job_refuses_a_real_publish_off_main(self) -> None:
+        for job in [self.build, self.publish, self.push]:
             step = job["steps"][0]
             self.assertEqual(step["name"], "Runs on main only")
             self.assertEqual(step["env"], {"REF": "${{ github.ref }}", "DRY_RUN": "${{ inputs.dry_run }}"})

@@ -324,6 +324,33 @@ class PublishPushTest(unittest.TestCase):
 
         self.assert_not_pushed(self.run_step(tamper=tamper), "regular file")
 
+    def test_the_push_job_refuses_metadata_that_is_a_symlink(self) -> None:
+        def tamper(work: Path) -> None:
+            (work / "packages/zstd.json").unlink()
+            (work / "packages/zstd.json").symlink_to("../index.json")
+            self.git("add", "packages/zstd.json", cwd=work)
+            self.git("commit", "-q", "--amend", "--no-edit", cwd=work)
+
+        self.assert_not_pushed(self.run_step(tamper=tamper), "packages/zstd.json is not a regular file")
+
+    def test_the_push_job_refuses_executable_metadata_or_archive(self) -> None:
+        for rel in ["packages/zstd.json", ARCHIVE]:
+            with self.subTest(rel=rel):
+                self.setUp()
+
+                def tamper(work: Path) -> None:
+                    self.git("update-index", "--chmod=+x", rel, cwd=work)
+                    self.git("commit", "-q", "--amend", "--no-edit", cwd=work)
+
+                self.assert_not_pushed(self.run_step(tamper=tamper), f"{rel} is not a regular file")
+
+    def test_the_push_job_refuses_an_archive_outside_its_version_directory(self) -> None:
+        def tamper(work: Path) -> None:
+            self.git("mv", ARCHIVE, "artifacts/zstd/1.5.7/zstd-9.9-1.yurtpkg", cwd=work)
+            self.git("commit", "-q", "--amend", "--no-edit", cwd=work)
+
+        self.assert_not_pushed(self.run_step(tamper=tamper), "artifacts/zstd/1.5.7/zstd-9.9-1.yurtpkg")
+
     def test_rebases_onto_a_main_that_moved_elsewhere(self) -> None:
         # The zstd case: a pull request merged during the build, and Release signed another
         # package's archive.

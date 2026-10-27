@@ -22,6 +22,8 @@ class JobTimeoutTest(unittest.TestCase):
         self.assertEqual(jobs["build"]["timeout-minutes"], "${{ inputs.package == 'clang' && 360 || 45 }}")
         # The publish job builds yurt-repo-ci from cold and commits.
         self.assertEqual(jobs["publish"]["timeout-minutes"], 20)
+        # The push job runs git only.
+        self.assertEqual(jobs["push"]["timeout-minutes"], 10)
         for name, job in yaml.safe_load((WORKFLOWS / "ci.yml").read_text())["jobs"].items():
             self.assertEqual(job["timeout-minutes"], 10, name)
 
