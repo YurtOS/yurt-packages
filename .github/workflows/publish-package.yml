@@ -8,7 +8,6 @@ on:
         required: true
         type: choice
         options:
-          - yurt-greet
           - pkg
           - busybox
           - ncurses
@@ -52,27 +51,47 @@ on:
         required: false
         type: boolean
         default: false
+      dry_run:
+        description: "Build, check and commit as a real publish does, then stop before the push: the package never reaches main. Allowed from any branch (a real publish runs from main only). From main, Release still follows and commits a renewed index; dispatch from a branch to avoid that."
+        required: false
+        type: boolean
+        default: false
 
-permissions:
-  contents: write
+# Each job sets its own. No job's GITHUB_TOKEN can write: the push to main
+# uses PACKAGE_PUBLISH_TOKEN, in the push job's last step only.
+permissions: {}
 
-# Every run commits a package to main. One run at a time, so two publishes
-# never push at once. A queued run still checks out the main it was
-# dispatched on; its commit step rebases onto the main the first run left.
-# (A group holds one pending run: a third dispatch while one waits replaces
-# the waiting one.)
+# A real run commits a package to main. One at a time (rustup-dist's publish
+# shares the group), so two publishes never push at once. A queued run still
+# checks out the main it was dispatched on; its push step rebases onto the
+# main the first run left. (A group holds one pending run: a third dispatch
+# while one waits replaces the waiting one.) A dry run pushes nothing and
+# gets a group of its own, so it never replaces a waiting publish or holds
+# the group for a long build.
 concurrency:
-  group: publish-package
+  group: ${{ inputs.dry_run && format('publish-package-dry-run-{0}', github.run_id) || 'publish-package' }}
   cancel-in-progress: false
 
 jobs:
-  publish:
+  # Builds the port and hands over only the archive. Everything the build
+  # runs (port scripts, fetched toolchains, crates, pip and npm packages)
+  # runs here, with a read-only token and a GITHUB_TOKEN that cannot write.
+  build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     # A hang fails here, not at GitHub's 6-hour default. 45 minutes: the
     # slowest of the first 39 runs took 19.9. clang builds LLVM twice
     # (clang+lld, no compiler cache): the same build in yurt-clang's release
     # took 163 to 245 minutes on hosted runners, so it gets the 6-hour ceiling.
     timeout-minutes: ${{ inputs.package == 'clang' && 360 || 45 }}
+    outputs:
+      ports_sha: ${{ steps.ports.outputs.sha }}
+      pkg_sha: ${{ steps.pkg.outputs.sha }}
+      version: ${{ steps.release.outputs.version }}
+      build: ${{ steps.release.outputs.build }}
+      sha256: ${{ steps.archive.outputs.sha256 }}
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
     env:
       # dtolnay/rust-toolchain exports CARGO_TERM_COLOR=always when it is
       # unset. The guest SDK's cargo-yurt parses `cargo tree` output, and
@@ -80,23 +99,22 @@ jobs:
       # line") for every port with registry-ported crates, rtk among them.
       CARGO_TERM_COLOR: never
     steps:
-      # Only main publishes: the commit step pushes to main, and Release
+      # Only main publishes: the push job pushes to main, and Release
       # signs only what a Publish Package run on main committed. A dispatch
-      # from another branch would put that branch's commits on main.
+      # from another branch would put that branch's commits on main. A dry
+      # run pushes nothing, so it may run from any branch.
       - name: Runs on main only
         env:
           REF: ${{ github.ref }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          [ "$REF" = refs/heads/main ] ||
+          [ "$REF" = refs/heads/main ] || [ "$DRY_RUN" = true ] ||
             { echo "::error::Publish Package runs from main only (this run is on $REF)"; exit 1; }
 
       - name: Check out yurt-packages
         uses: actions/checkout@v7
         with:
           path: yurt-packages
-          token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
-          # Read once here: no build step finds the token in a clone's
-          # git config (the commit step pushes with it explicitly).
           persist-credentials: false
 
       - name: The yurt-ports commit is well-formed
@@ -115,25 +133,28 @@ jobs:
           ref: ${{ inputs.ports_sha }}
           # main's history, for the check below.
           fetch-depth: 0
-          token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+          token: ${{ secrets.PACKAGE_READ_TOKEN }}
           # Read once here: no build step finds the token in a clone's
-          # git config (the commit step pushes with it explicitly).
+          # git config.
           persist-credentials: false
 
       # Only what yurt-ports main has had: a commit off main (a pull
-      # request's branch, say) is never published.
+      # request's branch, say) is never published. The publish job reads
+      # the manifest at this commit and checks it again.
       - name: The yurt-ports commit is on main
+        id: ports
         working-directory: yurt-ports
         run: |
           set -euo pipefail
           git merge-base --is-ancestor HEAD origin/main ||
             { echo "::error::yurt-ports $(git rev-parse HEAD) is not in main's history"; exit 1; }
           echo "building yurt-ports $(git rev-parse HEAD)"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       # Before anything is built: archives are committed to git, so a publish
       # must add a new version (or, with allow_new_build, a new build of one)
       # that pkg ranks above the newest published release (or allow_downgrade).
-      # tools/publish_policy.py has the rules.
+      # tools/publish_policy.py has the rules. The publish job checks again.
       - name: Publish only a new version
         env:
           PORT: ${{ inputs.package }}
@@ -147,15 +168,42 @@ jobs:
             --allow-new-build "$ALLOW_NEW_BUILD" \
             --allow-downgrade "$ALLOW_DOWNGRADE"
 
+      # Before any build code runs: the push job accepts only an archive at
+      # this version and build, the ones the policy just checked.
+      - name: Record the release
+        id: release
+        env:
+          PORT: ${{ inputs.package }}
+        run: |
+          set -euo pipefail
+          read -r version build < <(python3 -c '
+          import sys, tomllib
+          m = tomllib.load(open(sys.argv[1], "rb"))
+          print(m["version"], m["build"])
+          ' "yurt-ports/ports/${PORT}/yurt-pack.toml")
+          for value in "$version" "$build"; do
+            [[ "$value" =~ ^[A-Za-z0-9._+~-]+$ ]] || { echo "::error::unexpected version or build: $value"; exit 1; }
+          done
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+
       - name: Check out yurt-pkg
         uses: actions/checkout@v7
         with:
           repository: YurtOS/yurt-pkg
           path: yurt-pkg
-          token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+          token: ${{ secrets.PACKAGE_READ_TOKEN }}
           # Read once here: no build step finds the token in a clone's
-          # git config (the commit step pushes with it explicitly).
+          # git config.
           persist-credentials: false
+
+      # Before any build code runs: the publish job runs yurt-repo-ci from
+      # this same yurt-pkg commit, not whatever main has when it starts.
+      - name: Record the yurt-pkg commit
+        id: pkg
+        run: |
+          set -euo pipefail
+          echo "sha=$(git -C yurt-pkg rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Check out yurt-go
         if: inputs.package == 'gh' || inputs.package == 'go'
@@ -165,8 +213,9 @@ jobs:
           path: sources/yurt-go
           # The port pins a yurt-go commit and exports it with git archive.
           fetch-depth: 0
-          token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
-          # Read once here; don't leave the token in the clone the build reads.
+          token: ${{ secrets.PACKAGE_READ_TOKEN }}
+          # Read once here: no build step finds the token in a clone's
+          # git config.
           persist-credentials: false
 
       - name: Set up bootstrap Go
@@ -182,9 +231,9 @@ jobs:
         with:
           repository: YurtOS/yurt-clang
           path: sources/yurt-clang
-          token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+          token: ${{ secrets.PACKAGE_READ_TOKEN }}
           # Read once here: no build step finds the token in a clone's
-          # git config (the commit step pushes with it explicitly).
+          # git config.
           persist-credentials: false
 
       - name: Set up Rust
@@ -193,38 +242,22 @@ jobs:
           targets: wasm32-wasip1,wasm32-wasip1-threads
           components: rust-src
 
+      # This job's own cache: the publish job restores none, so whatever a
+      # build leaves in ~/.cargo or target/ never reaches the code that
+      # writes to this repository.
       - name: Cache Rust builds
         uses: Swatinem/rust-cache@v2
-
-      - name: Reject duplicate package version
-        env:
-          PORT: ${{ inputs.package }}
-        run: |
-          set -euxo pipefail
-          cargo run --manifest-path yurt-pkg/Cargo.toml -p yurt-repo-ci -- \
-            assert-not-published \
-            --repo-root yurt-packages \
-            --manifest "yurt-ports/ports/${PORT}/yurt-pack.toml"
+        with:
+          shared-key: publish-package-build
 
       - name: Check out yurtos-kernel
         uses: actions/checkout@v7
         with:
           repository: YurtOS/yurtos-kernel
           path: yurtos-kernel
-          token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+          token: ${{ secrets.PACKAGE_READ_TOKEN }}
           # Read once here: no build step finds the token in a clone's
-          # git config (the commit step pushes with it explicitly).
-          persist-credentials: false
-
-      - name: Check out yurt-greet source
-        if: inputs.package == 'yurt-greet'
-        uses: actions/checkout@v7
-        with:
-          repository: YurtOS/yurt-greet
-          path: sources/yurt-greet
-          token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
-          # Read once here: no build step finds the token in a clone's
-          # git config (the commit step pushes with it explicitly).
+          # git config.
           persist-credentials: false
 
       - name: Install Binaryen
@@ -268,16 +301,11 @@ jobs:
       - name: Install Yurt guest SDK
         working-directory: yurtos-kernel
         env:
-          GH_TOKEN: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+          GH_TOKEN: ${{ secrets.PACKAGE_READ_TOKEN }}
         run: |
           set -euxo pipefail
           scripts/install-yurt-sdk-release.sh
           scripts/publish-yurt-sdk-github-env.sh "$PWD/target/yurt-sdk"
-
-      - name: Build Yurt Rust std
-        if: inputs.package == 'yurt-greet'
-        working-directory: yurtos-kernel
-        run: scripts/build-rust-std.sh --rust "$(rustc --version | awk '{print $2}')"
 
       - name: Build dependency stages
         if: >-
@@ -329,15 +357,15 @@ jobs:
           YURT_ROOT: ${{ github.workspace }}/yurtos-kernel
           YURT_RUST_STD: ${{ github.workspace }}/yurtos-kernel/abi/build/rust-std/1.95.0
           YURT_PKG_ROOT: ${{ github.workspace }}/yurt-pkg
-          YURT_GREET_SOURCE: ${{ github.workspace }}/sources/yurt-greet
           YURT_PKG_SOURCE: ${{ github.workspace }}/yurt-pkg
           YURT_CLANG_SOURCE: ${{ github.workspace }}/sources/yurt-clang
           YURT_GO_SOURCE: ${{ github.workspace }}/sources/yurt-go
           HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}
           PORT: ${{ inputs.package }}
           # node's port fetches its pinned YurtOS/yurt-node release (private)
-          # with gh: the one build that gets the token in its environment.
-          GH_TOKEN: ${{ inputs.package == 'node' && secrets.PACKAGE_PUBLISH_TOKEN || '' }}
+          # with gh: the one build that gets the read token in its
+          # environment.
+          GH_TOKEN: ${{ inputs.package == 'node' && secrets.PACKAGE_READ_TOKEN || '' }}
           # numpy and pyzmq were built by the dependency step (outside it,
           # their build would not find cpython-base); pack those stages.
           YURT_PACKAGE_SKIP_BUILD: ${{ (inputs.package == 'numpy' || inputs.package == 'pyzmq') && '1' || '0' }}
@@ -345,40 +373,211 @@ jobs:
           set -euxo pipefail
           "yurt-ports/ports/${PORT}/scripts/package.sh"
 
-      - name: Publish package metadata
+      - name: Hash the archive
+        id: archive
+        env:
+          PORT: ${{ inputs.package }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          archives=("yurt-ports/ports/${PORT}/build/dist/"*.yurtpkg)
+          [ "${#archives[@]}" -eq 1 ] ||
+            { echo "::error::expected one .yurtpkg in build/dist, found ${#archives[@]}"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/package"
+          cp -- "${archives[0]}" "$RUNNER_TEMP/package/"
+          echo "sha256=$(sha256sum "${archives[0]}" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the archive
+        id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: package
+          path: ${{ runner.temp }}/package/
+          if-no-files-found: error
+          retention-days: 7
+
+  # Writes the archive and its metadata to this repository. A fresh runner
+  # that runs no port or build code: it reads the archive as data, checks
+  # it, and commits only that package's files. It builds and runs
+  # yurt-repo-ci (with its crates' build scripts), so it never sees the push
+  # token: it hands over only a bundle of its commit, which the push job
+  # verifies.
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 20
+    outputs:
+      commit_artifact_id: ${{ steps.upload-commit.outputs.artifact-id }}
+    steps:
+      - name: Runs on main only
+        env:
+          REF: ${{ github.ref }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          [ "$REF" = refs/heads/main ] || [ "$DRY_RUN" = true ] ||
+            { echo "::error::Publish Package runs from main only (this run is on $REF)"; exit 1; }
+
+      - name: Check out yurt-packages
+        uses: actions/checkout@v7
+        with:
+          path: yurt-packages
+          persist-credentials: false
+
+      - name: The build job's commits are well-formed
+        env:
+          PORTS_SHA: ${{ needs.build.outputs.ports_sha }}
+          REQUESTED_PORTS_SHA: ${{ inputs.ports_sha }}
+          PKG_SHA: ${{ needs.build.outputs.pkg_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$PORTS_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+            { echo "::error::the build job's yurt-ports commit is not a 40-hex SHA"; exit 1; }
+          [[ -z "$REQUESTED_PORTS_SHA" || "$PORTS_SHA" = "$REQUESTED_PORTS_SHA" ]] ||
+            { echo "::error::the build job built yurt-ports $PORTS_SHA, not the requested $REQUESTED_PORTS_SHA"; exit 1; }
+          [[ "$PKG_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+            { echo "::error::the build job's yurt-pkg commit is not a 40-hex SHA"; exit 1; }
+
+      # Only to read the port's yurt-pack.toml; nothing from it runs.
+      - name: Check out yurt-ports
+        uses: actions/checkout@v7
+        with:
+          repository: YurtOS/yurt-ports
+          path: yurt-ports
+          ref: ${{ needs.build.outputs.ports_sha }}
+          fetch-depth: 0
+          token: ${{ secrets.PACKAGE_READ_TOKEN }}
+          persist-credentials: false
+
+      - name: The yurt-ports commit is on main
+        working-directory: yurt-ports
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor HEAD origin/main ||
+            { echo "::error::yurt-ports $(git rev-parse HEAD) is not in main's history"; exit 1; }
+
+      - name: Publish only a new version
+        env:
+          PORT: ${{ inputs.package }}
+          ALLOW_NEW_BUILD: ${{ inputs.allow_new_build }}
+          ALLOW_DOWNGRADE: ${{ inputs.allow_downgrade }}
+        run: |
+          set -euo pipefail
+          python3 yurt-packages/tools/publish_policy.py check \
+            --repo-root yurt-packages \
+            --manifest "yurt-ports/ports/${PORT}/yurt-pack.toml" \
+            --allow-new-build "$ALLOW_NEW_BUILD" \
+            --allow-downgrade "$ALLOW_DOWNGRADE"
+
+      - name: Check out yurt-pkg
+        uses: actions/checkout@v7
+        with:
+          repository: YurtOS/yurt-pkg
+          path: yurt-pkg
+          ref: ${{ needs.build.outputs.pkg_sha }}
+          fetch-depth: 0
+          token: ${{ secrets.PACKAGE_READ_TOKEN }}
+          persist-credentials: false
+
+      # The build job's outputs are untrusted (its code could forge them), so
+      # as with yurt-ports: only a commit yurt-pkg main has had runs here.
+      - name: The yurt-pkg commit is on main
+        working-directory: yurt-pkg
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor HEAD origin/main ||
+            { echo "::error::yurt-pkg $(git rev-parse HEAD) is not in main's history"; exit 1; }
+
+      # No Rust cache: this job builds yurt-repo-ci from a clean ~/.cargo
+      # and target/, so nothing a build job left behind runs here.
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.97.1
+
+      - name: Check the artifact id
+        id: ids
+        env:
+          ARTIFACT_ID: ${{ needs.build.outputs.artifact_id }}
+        run: |
+          set -euo pipefail
+          [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]] || { echo "::error::the build job's artifact id is not all digits"; exit 1; }
+          echo "artifact_id=$ARTIFACT_ID" >> "$GITHUB_OUTPUT"
+
+      # By id, so it is the artifact this run's build job uploaded.
+      - name: Download the archive
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ steps.ids.outputs.artifact_id }}
+          path: ${{ runner.temp }}/package
+
+      # The archive is data from the build job: one file, named for the
+      # port's manifest, with the hash the build job recorded.
+      - name: Check the archive
+        id: archive
+        env:
+          PORT: ${{ inputs.package }}
+          SHA256: ${{ needs.build.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob dotglob
+          files=("$RUNNER_TEMP/package/"*)
+          [ "${#files[@]}" -eq 1 ] && [ -f "${files[0]}" ] && [ ! -L "${files[0]}" ] ||
+            { echo "::error::the artifact must hold exactly one regular file"; exit 1; }
+          read -r name version build < <(python3 -c '
+          import sys, tomllib
+          m = tomllib.load(open(sys.argv[1], "rb"))
+          print(m["name"], m["version"], m["build"])
+          ' "yurt-ports/ports/${PORT}/yurt-pack.toml")
+          [ "$name" = "$PORT" ] ||
+            { echo "::error::the ${PORT} port's manifest names ${name}"; exit 1; }
+          expected="${name}-${version}-${build}.yurtpkg"
+          [ "$(basename "${files[0]}")" = "$expected" ] ||
+            { echo "::error::the artifact is $(basename "${files[0]}"), not ${expected}"; exit 1; }
+          [[ "$SHA256" =~ ^[0-9a-f]{64}$ ]] &&
+            [ "$(sha256sum "${files[0]}" | cut -d' ' -f1)" = "$SHA256" ] ||
+            { echo "::error::the archive's sha256 does not match the build job's"; exit 1; }
+          {
+            echo "path=${files[0]}"
+            echo "rel=artifacts/${name}/${version}/${expected}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Reject duplicate package version
         env:
           PORT: ${{ inputs.package }}
         run: |
           set -euxo pipefail
+          cargo run --locked --manifest-path yurt-pkg/Cargo.toml -p yurt-repo-ci -- \
+            assert-not-published \
+            --repo-root yurt-packages \
+            --manifest "yurt-ports/ports/${PORT}/yurt-pack.toml"
+
+      - name: Publish package metadata
+        env:
+          PORT: ${{ inputs.package }}
+          ARTIFACT: ${{ steps.archive.outputs.path }}
+        run: |
+          set -euxo pipefail
           generated_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-          artifact="$(ls "yurt-ports/ports/${PORT}/build/dist/"*.yurtpkg)"
-          cargo run --manifest-path yurt-pkg/Cargo.toml -p yurt-repo-ci -- \
+          cargo run --locked --manifest-path yurt-pkg/Cargo.toml -p yurt-repo-ci -- \
             publish-local \
             --repo-root yurt-packages \
-            --artifact "$artifact" \
+            --artifact "$ARTIFACT" \
             --manifest "yurt-ports/ports/${PORT}/yurt-pack.toml" \
             --generated-at "$generated_at" \
             --reject-existing
 
       # publish-local also rewrites index.json and writes placeholder
       # bundles ("local test fixture bundle"). Only the archive and its
-      # package metadata are committed here. release.yml, which this run's
-      # completion triggers, regenerates and signs index.json and signs the
-      # new archive, so main never carries an unsigned index or a placeholder.
-      #
-      # Other writers push to main while the build runs (a merged pull
-      # request, a Release run). This commit touches only its own package's
-      # files, so it is rebased onto a main that moved, and the push retried,
-      # unless main changed one of that package's files since the checkout:
-      # its packages/<name>.json, or anything under artifacts/<name>/ other
-      # than the signature bundles of releases already there. That is a real
-      # conflict (another publish of the package, or its removal), and the run
-      # fails without pushing, as release.yml does for its own paths.
+      # package metadata are committed here: the staged paths must be
+      # exactly packages/<name>.json and the archive. release.yml, which this
+      # run's completion triggers, regenerates and signs index.json and signs
+      # the new archive, so main never carries an unsigned index or a
+      # placeholder.
       - name: Commit repository update
+        id: commit
         env:
           PACKAGE: ${{ inputs.package }}
-          # The push credential, here only: the checkouts keep no token.
-          PUSH_TOKEN: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+          ARCHIVE: ${{ steps.archive.outputs.rel }}
         working-directory: yurt-packages
         run: |
           set -euxo pipefail
@@ -393,32 +592,163 @@ jobs:
             echo "No package repository changes to commit."
             exit 0
           fi
+          staged="$(git diff --cached --name-only | sort)"
+          allowed="$(printf '%s\n' "$ARCHIVE" "packages/${PACKAGE}.json" | sort)"
+          if [ "$staged" != "$allowed" ]; then
+            echo "::error::the publish must change exactly ${ARCHIVE} and packages/${PACKAGE}.json; staged:"
+            echo "$staged"
+            exit 1
+          fi
           git commit -m "chore: publish ${PACKAGE} package"
-          start="$(git rev-parse HEAD^)"
-          # The paths a moved main must not have touched: everything this
-          # commit adds, each committed package's metadata and artifacts
-          # directory, and the bundle of each archive it adds.
+          echo "committed $(git rev-parse HEAD):"
+          git show --stat --format='%s' HEAD
+          # The hand-over to the push job: this one commit, on the checkout.
+          mkdir -p "$RUNNER_TEMP/handover"
+          git bundle create "$RUNNER_TEMP/handover/commit.bundle" HEAD^..HEAD
+          echo "committed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the commit
+        id: upload-commit
+        if: ${{ steps.commit.outputs.committed == 'true' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: commit
+          path: ${{ runner.temp }}/handover/commit.bundle
+          if-no-files-found: error
+          retention-days: 1
+
+  # Pushes the publish job's commit to main. Another fresh runner that runs
+  # nothing but git on a credential-less checkout of this run's commit: no
+  # cargo, no toolchain, no code from yurt-pkg, yurt-ports or a port. It
+  # trusts only what it verifies in the hand-over bundle. A dry run verifies
+  # and stops before the push.
+  push:
+    needs: [build, publish]
+    if: ${{ needs.publish.outputs.commit_artifact_id != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    steps:
+      - name: Runs on main only
+        env:
+          REF: ${{ github.ref }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          [ "$REF" = refs/heads/main ] || [ "$DRY_RUN" = true ] ||
+            { echo "::error::Publish Package runs from main only (this run is on $REF)"; exit 1; }
+
+      - name: Check out yurt-packages
+        uses: actions/checkout@v7
+        with:
+          path: yurt-packages
+          persist-credentials: false
+
+      - name: Check the handover
+        id: handover
+        env:
+          ARTIFACT_ID: ${{ needs.publish.outputs.commit_artifact_id }}
+          SHA256: ${{ needs.build.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]] || { echo "::error::the publish job's artifact id is not all digits"; exit 1; }
+          [[ "$SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::the build job's sha256 is not 64-hex"; exit 1; }
+          echo "artifact_id=$ARTIFACT_ID" >> "$GITHUB_OUTPUT"
+
+      # By id, so it is the bundle this run's publish job uploaded.
+      - name: Download the commit
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ steps.handover.outputs.artifact_id }}
+          path: ${{ runner.temp }}/handover
+
+      # The commit must be one commit on this run's checkout that adds the
+      # package's archive at artifacts/<name>/<version>/<name>-<version>-
+      # <build>.yurtpkg (the manifest's version and build, which the build
+      # job recorded before building; a regular file with the sha256 the
+      # build job reported) and adds or changes packages/<name>.json (a
+      # regular file), and nothing else.
+      # packages/<name>.json is yurt-repo-ci's output and is taken as is.
+      - name: Verify the commit
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ needs.build.outputs.version }}
+          BUILD: ${{ needs.build.outputs.build }}
+          SHA256: ${{ needs.build.outputs.sha256 }}
+        working-directory: yurt-packages
+        run: |
+          set -euo pipefail
+          [[ "$PACKAGE" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "::error::unexpected package name $PACKAGE"; exit 1; }
+          for value in "$VERSION" "$BUILD"; do
+            [[ "$value" =~ ^[A-Za-z0-9._+~-]+$ ]] || { echo "::error::unexpected version or build: $value"; exit 1; }
+          done
+          expected="artifacts/${PACKAGE}/${VERSION}/${PACKAGE}-${VERSION}-${BUILD}.yurtpkg"
+          bundle="$RUNNER_TEMP/handover/commit.bundle"
+          [ -f "$bundle" ] && [ ! -L "$bundle" ] || { echo "::error::no commit bundle was handed over"; exit 1; }
+          start="$(git rev-parse HEAD)"
+          git bundle verify -q "$bundle"
+          git fetch -q --no-tags "$bundle" HEAD
+          commit="$(git rev-parse FETCH_HEAD)"
+          if [ "$(git rev-list --parents -n 1 "$commit")" != "$commit $start" ]; then
+            echo "::error::the hand-over must be one commit on $start"
+            exit 1
+          fi
+          archive="" metadata=""
+          while IFS=$'\t' read -r status path; do
+            if [[ "$status" = A && "$path" = "$expected" ]]; then
+              archive="$path"
+              continue
+            fi
+            if [[ ( "$status" = A || "$status" = M ) && "$path" = "packages/${PACKAGE}.json" ]]; then
+              metadata="$path"
+              continue
+            fi
+            echo "::error::the commit may add ${PACKAGE}'s archive and packages/${PACKAGE}.json only; it changes: $status $path"
+            exit 1
+          done < <(git diff --no-renames --name-status "$start" "$commit")
+          [ -n "$archive" ] && [ -n "$metadata" ] ||
+            { echo "::error::the commit must add ${PACKAGE}'s archive and packages/${PACKAGE}.json"; exit 1; }
+          for path in "$archive" "$metadata"; do
+            mode="$(git ls-tree "$commit" -- "$path" | cut -d' ' -f1)"
+            [ "$mode" = 100644 ] || { echo "::error::${path} is not a regular file (mode $mode)"; exit 1; }
+          done
+          actual="$(git cat-file blob "$commit:$archive" | sha256sum | cut -d' ' -f1)"
+          [ "$actual" = "$SHA256" ] ||
+            { echo "::error::${archive}'s sha256 $actual is not the build's $SHA256"; exit 1; }
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git merge -q --ff-only "$commit"
+          # For the push step: the checkout commit, and the paths a moved
+          # main must not have touched: everything this commit adds, the
+          # package's metadata and artifacts directory, and the bundle of the
+          # archive it adds.
+          echo "$start" > "$RUNNER_TEMP/publish-start"
+          printf '%s\n' "$archive" "$metadata" "artifacts/${PACKAGE}" "${archive}.bundle" > "$RUNNER_TEMP/publish-scope"
+          echo "${archive}.bundle" > "$RUNNER_TEMP/publish-own-bundles"
+          echo "verified $commit:"
+          git show --stat --format='%s' "$commit"
+
+      # Other writers push to main while the build runs (a merged pull
+      # request, a Release run). This commit touches only its own package's
+      # files, so it is rebased onto a main that moved, and the push retried,
+      # unless main changed one of that package's files since the checkout:
+      # its packages/<name>.json, or anything under artifacts/<name>/ other
+      # than the signature bundles of releases already there. That is a real
+      # conflict (another publish of the package, or its removal), and the run
+      # fails without pushing, as release.yml does for its own paths.
+      - name: Push to main
+        if: ${{ !inputs.dry_run }}
+        env:
+          # The push credential, here only: the checkouts keep no token, no
+          # earlier step of any job has it, and this job runs nothing but git.
+          PUSH_TOKEN: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+        working-directory: yurt-packages
+        run: |
+          set -euo pipefail
+          start="$(cat "$RUNNER_TEMP/publish-start")"
           scope=()
+          while IFS= read -r path; do scope+=("$path"); done < "$RUNNER_TEMP/publish-scope"
           own_bundles="$RUNNER_TEMP/publish-own-bundles"
-          : > "$own_bundles"
-          while IFS= read -r path; do
-            scope+=("$path")
-            case "$path" in
-              packages/*.json)
-                name="${path#packages/}"
-                name="${name%.json}"
-                scope+=("artifacts/$name")
-                ;;
-              *.yurtpkg)
-                scope+=("$path.bundle")
-                echo "$path.bundle" >> "$own_bundles"
-                ;;
-            esac
-          done < <(git diff --name-only HEAD^ HEAD)
-          # The index.json and placeholder bundles publish-local left are not
-          # committed; a rebase needs a clean tree.
-          git reset -q --hard HEAD
-          set +x
           auth=$(printf 'x-access-token:%s' "$PUSH_TOKEN" | base64 -w0)
           echo "::add-mask::$auth"
           attempts=5
