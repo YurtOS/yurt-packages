@@ -1,0 +1,23 @@
+{
+  "name": "gemini-cli",
+  "versions": [
+    {
+      "version": "0.64.0",
+      "build": "yurt_0",
+      "url": "artifacts/gemini-cli/0.64.0/gemini-cli-0.64.0-yurt_0.yurtpkg",
+      "sha256": "37a2cab4ac930464ad9bb824a729189ab4c80a11569938cb0aceccbc56ac7e6c",
+      "size": 17026025,
+      "signing": {
+        "subject": "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main",
+        "issuer": "https://token.actions.githubusercontent.com"
+      },
+      "depends": [
+        {
+          "name": "node",
+          "req": "^22.23"
+        }
+      ],
+      "yanked": false
+    }
+  ]
+}
