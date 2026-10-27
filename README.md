@@ -45,7 +45,7 @@ a sandbox picks up a new build with `pkg update` / `pkg upgrade`. Notes:
   build they share in yurt-ports, which marks the set; the playground installs
   the newest build the first four have, and a suspended notebook resumes only
   on the set it was suspended with.
-  - Each run builds the cpython chain first, with yurt-ports'
+  - Each run except `python-seal`'s builds the cpython chain first, with yurt-ports'
     `scripts/port-cache.sh`, cache off: zlib, bzip2, xz, OpenSSL, libzmq,
     SQLite and the interpreter the extensions compile against.
   - `python` then builds pyzmq, numpy and the interpreter with them linked in,
