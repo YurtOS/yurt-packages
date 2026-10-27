@@ -47,6 +47,11 @@ on:
         required: false
         type: boolean
         default: false
+      allow_downgrade:
+        description: "Publish a release that pkg would rank at or below the newest published one of the package (a lower version, or a build pkg does not order above it). By default that is refused, since pkg would never pick it."
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -126,18 +131,21 @@ jobs:
           echo "building yurt-ports $(git rev-parse HEAD)"
 
       # Before anything is built: archives are committed to git, so a publish
-      # must add a new version (or, with allow_new_build, a new build of one).
+      # must add a new version (or, with allow_new_build, a new build of one)
+      # that pkg ranks above the newest published release (or allow_downgrade).
       # tools/publish_policy.py has the rules.
       - name: Publish only a new version
         env:
           PORT: ${{ inputs.package }}
           ALLOW_NEW_BUILD: ${{ inputs.allow_new_build }}
+          ALLOW_DOWNGRADE: ${{ inputs.allow_downgrade }}
         run: |
           set -euo pipefail
           python3 yurt-packages/tools/publish_policy.py check \
             --repo-root yurt-packages \
             --manifest "yurt-ports/ports/${PORT}/yurt-pack.toml" \
-            --allow-new-build "$ALLOW_NEW_BUILD"
+            --allow-new-build "$ALLOW_NEW_BUILD" \
+            --allow-downgrade "$ALLOW_DOWNGRADE"
 
       - name: Check out yurt-pkg
         uses: actions/checkout@v7

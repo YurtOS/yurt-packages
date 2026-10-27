@@ -49,6 +49,16 @@ anything is built, the workflow's "Publish only a new version" step
   version change, and for the Python set, whose shared `yurt_N` build moves
   without a CPython version change. Bump the port's `build` in yurt-ports
   first.
+- A release that pkg would not rank above the newest published one is refused
+  unless the dispatch sets `allow_downgrade`. pkg picks the highest semver
+  `version`, then the highest `N` of a `yurt_N` build (any other build, such as
+  `1`, counts as 0), and skips yanked releases. So openssl 3.5.8 is refused
+  while 4.0.0 is published, and so is `0.1.1-yurt_0` next to a published
+  `0.1.1-2`. A downgrade publish adds an archive that `pkg install` never
+  picks on its own; set the input only when that is the point (to pin
+  `name@version` explicitly, for example). A port still on a plain numeric
+  build (`1`, `2`) ranks 0 against every published build of its version, so a
+  rebuild of that version needs both inputs; moving it to `yurt_N` avoids that.
 - A new `version`, or a package not published yet, goes ahead.
 
 Each package builds from the yurt-ports port of the same name, at yurt-ports

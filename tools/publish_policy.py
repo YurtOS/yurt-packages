@@ -9,6 +9,11 @@ build, `check` compares the port's yurt-pack.toml with the package's packages/<n
 - the same version under another build: refused unless --allow-new-build is given (the
   workflow's `allow_new_build` input), for a rebuild that has to ship without a version change,
   such as a packaging fix or the Python set's shared `yurt_N` build;
+- a release pkg would not rank above the newest published one: refused unless
+  --allow-downgrade is given (the workflow's `allow_downgrade` input). pkg's resolver orders
+  releases by semver version (the semver crate's order, build metadata included), then by the
+  N of a `yurt_N` build (any other build counts as 0),
+  and skips yanked releases; release_key() is that order;
 - a new version, or a package not published yet: allowed.
 
 Standard library only: the workflow runs it with the runner's python3.
@@ -18,16 +23,73 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import tomllib
 from pathlib import Path
+
+# semver.org's regular expression (ASCII digits only), as the semver crate pkg uses accepts
+# it; that crate also refuses major, minor and patch numbers above u64.
+SEMVER = re.compile(
+    r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
+    r"(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?"
+    r"(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?",
+    re.ASCII,
+)
+# Rust's u64::from_str: ASCII digits, an optional leading "+", at most u64::MAX.
+YURT_BUILD = re.compile(r"yurt_\+?([0-9]+)", re.ASCII)
+U64_MAX = 2**64 - 1
 
 
 class PolicyError(Exception):
     pass
 
 
-def check(repo_root: Path, manifest_path: Path, allow_new_build: bool) -> str:
+def semver_key(version: str) -> tuple | None:
+    """A sort key in the semver crate's `Version` order, or None when it would not parse.
+
+    major.minor.patch first. A release ranks above its prereleases; prerelease identifiers
+    compare left to right, numeric ones as numbers and below alphanumeric ones (ASCII), and a
+    shorter list ranks lower when it is a prefix. Then build metadata, which the crate also
+    orders (`BuildMetadata`'s Ord): none ranks lowest; digit runs compare by value, then by
+    length (0 < 00 < 1 < 01); they rank below alphanumeric identifiers (ASCII); a prefix ranks
+    lower.
+    """
+    match = SEMVER.fullmatch(version)
+    if not match:
+        return None
+    core = tuple(int(part) for part in match.group(1, 2, 3))
+    if any(part > U64_MAX for part in core):
+        return None
+    if match.group(4) is None:
+        pre: tuple = (1,)
+    else:
+        pre = (0, tuple(
+            (0, int(ident), "") if ident.isdigit() else (1, 0, ident) for ident in match.group(4).split(".")
+        ))
+    build: tuple = ()
+    if match.group(5) is not None:
+        build = tuple(
+            (0, len(ident.lstrip("0")), ident.lstrip("0"), len(ident)) if ident.isdigit() else (1, 0, ident, 0)
+            for ident in match.group(5).split(".")
+        )
+    return (core, pre, build)
+
+
+def build_rank(build: str) -> int:
+    """pkg's yurt_build_number(build).unwrap_or(0)."""
+    match = YURT_BUILD.fullmatch(build)
+    if not match or int(match.group(1)) > U64_MAX:
+        return 0
+    return int(match.group(1))
+
+
+def release_key(version: str, build: str) -> tuple:
+    """The order pkg's resolver picks releases in; an unparsable version ranks as 0.0.0."""
+    return (semver_key(version) or semver_key("0.0.0"), build_rank(build))
+
+
+def check(repo_root: Path, manifest_path: Path, allow_new_build: bool, allow_downgrade: bool = False) -> str:
     try:
         manifest = tomllib.loads(manifest_path.read_text())
     except (OSError, tomllib.TOMLDecodeError) as error:
@@ -37,21 +99,39 @@ def check(repo_root: Path, manifest_path: Path, allow_new_build: bool) -> str:
     except KeyError as error:
         raise PolicyError(f"{manifest_path} has no {error.args[0]}") from error
     release = f"{name} {version}-{build}"
+    if semver_key(version) is None:
+        raise PolicyError(f"{release}: {version} is not a semver version")
 
     package_path = repo_root / "packages" / f"{name}.json"
     if not package_path.exists():
         return f"{release}: a new package"
     try:
         package = json.loads(package_path.read_text())
-        published = [(str(entry["version"]), str(entry["build"])) for entry in package["versions"]]
+        entries = [
+            (str(entry["version"]), str(entry["build"]), entry.get("yanked") is True) for entry in package["versions"]
+        ]
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise PolicyError(f"reading {package_path}: {error}") from error
 
+    published = [(v, b) for v, b, _ in entries]
     if (version, build) in published:
         raise PolicyError(
             f"{release} is already published. A release is never replaced; publish a new version "
             "(or a new build, with allow_new_build)."
         )
+    current = [(v, b) for v, b, yanked in entries if not yanked]
+    downgrade = ""
+    if current:
+        newest = max(current, key=lambda release: release_key(*release))
+        if release_key(version, build) <= release_key(*newest):
+            relation = "older than" if release_key(version, build) < release_key(*newest) else "not newer than"
+            downgrade = f"{release} is {relation} the newest published {name} {newest[0]}-{newest[1]}"
+            if not allow_downgrade:
+                raise PolicyError(
+                    f"{downgrade} (pkg orders by semver version, then by the N of a yurt_N build, any "
+                    "other build counting as 0), so pkg would not pick it. Bump the port's version or "
+                    "yurt_N build; to publish it anyway, dispatch again with allow_downgrade."
+                )
     builds = sorted(b for v, b in published if v == version)
     if builds and not allow_new_build:
         raise PolicyError(
@@ -59,6 +139,8 @@ def check(repo_root: Path, manifest_path: Path, allow_new_build: bool) -> str:
             "version changes; every archive stays in git history. To ship a new build of the same "
             f"version ({build}), dispatch again with allow_new_build."
         )
+    if downgrade:
+        return f"{downgrade} (allow_downgrade)"
     if builds:
         return f"{release}: a new build of {name} {version} (allow_new_build; published builds: {', '.join(builds)})"
     return f"{release}: a new version"
@@ -76,9 +158,15 @@ def main(argv: list[str] | None = None) -> int:
         default="false",
         help="allow another build of a published version (the workflow input, as text)",
     )
+    check_parser.add_argument(
+        "--allow-downgrade",
+        choices=["true", "false"],
+        default="false",
+        help="allow a release pkg would rank at or below the newest published one (the workflow input, as text)",
+    )
     args = parser.parse_args(argv)
     try:
-        message = check(args.repo_root, args.manifest, args.allow_new_build == "true")
+        message = check(args.repo_root, args.manifest, args.allow_new_build == "true", args.allow_downgrade == "true")
     except PolicyError as error:
         print(f"::error::{error}")
         return 1
