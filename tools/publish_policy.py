@@ -11,7 +11,8 @@ build, `check` compares the port's yurt-pack.toml with the package's packages/<n
   such as a packaging fix or the Python set's shared `yurt_N` build;
 - a release pkg would not rank above the newest published one: refused unless
   --allow-downgrade is given (the workflow's `allow_downgrade` input). pkg's resolver orders
-  releases by semver version, then by the N of a `yurt_N` build (any other build counts as 0),
+  releases by semver version (the semver crate's order, build metadata included), then by the
+  N of a `yurt_N` build (any other build counts as 0),
   and skips yanked releases; release_key() is that order;
 - a new version, or a package not published yet: allowed.
 
@@ -27,13 +28,17 @@ import sys
 import tomllib
 from pathlib import Path
 
-# semver.org's regular expression, as the semver crate pkg uses accepts it.
+# semver.org's regular expression (ASCII digits only), as the semver crate pkg uses accepts
+# it; that crate also refuses major, minor and patch numbers above u64.
 SEMVER = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
     r"(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?"
-    r"(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$"
+    r"(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?",
+    re.ASCII,
 )
-YURT_BUILD = re.compile(r"^yurt_(\d+)$")
+# Rust's u64::from_str: ASCII digits, an optional leading "+", at most u64::MAX.
+YURT_BUILD = re.compile(r"yurt_\+?([0-9]+)", re.ASCII)
+U64_MAX = 2**64 - 1
 
 
 class PolicyError(Exception):
@@ -41,28 +46,42 @@ class PolicyError(Exception):
 
 
 def semver_key(version: str) -> tuple | None:
-    """A sort key in semver precedence, or None when `version` is not semver.
+    """A sort key in the semver crate's `Version` order, or None when it would not parse.
 
-    A release ranks above its prereleases. Prerelease identifiers compare left to right:
-    numeric ones as numbers and below alphanumeric ones, which compare as ASCII; a shorter list
-    ranks lower when it is a prefix. Build metadata (`+...`) does not count.
+    major.minor.patch first. A release ranks above its prereleases; prerelease identifiers
+    compare left to right, numeric ones as numbers and below alphanumeric ones (ASCII), and a
+    shorter list ranks lower when it is a prefix. Then build metadata, which the crate also
+    orders (`BuildMetadata`'s Ord): none ranks lowest; digit runs compare by value, then by
+    length (0 < 00 < 1 < 01); they rank below alphanumeric identifiers (ASCII); a prefix ranks
+    lower.
     """
-    match = SEMVER.match(version)
+    match = SEMVER.fullmatch(version)
     if not match:
         return None
     core = tuple(int(part) for part in match.group(1, 2, 3))
+    if any(part > U64_MAX for part in core):
+        return None
     if match.group(4) is None:
-        return (core, (1,))
-    identifiers = tuple(
-        (0, int(ident), "") if ident.isdigit() else (1, 0, ident) for ident in match.group(4).split(".")
-    )
-    return (core, (0, identifiers))
+        pre: tuple = (1,)
+    else:
+        pre = (0, tuple(
+            (0, int(ident), "") if ident.isdigit() else (1, 0, ident) for ident in match.group(4).split(".")
+        ))
+    build: tuple = ()
+    if match.group(5) is not None:
+        build = tuple(
+            (0, len(ident.lstrip("0")), ident.lstrip("0"), len(ident)) if ident.isdigit() else (1, 0, ident, 0)
+            for ident in match.group(5).split(".")
+        )
+    return (core, pre, build)
 
 
 def build_rank(build: str) -> int:
     """pkg's yurt_build_number(build).unwrap_or(0)."""
-    match = YURT_BUILD.match(build)
-    return int(match.group(1)) if match else 0
+    match = YURT_BUILD.fullmatch(build)
+    if not match or int(match.group(1)) > U64_MAX:
+        return 0
+    return int(match.group(1))
 
 
 def release_key(version: str, build: str) -> tuple:

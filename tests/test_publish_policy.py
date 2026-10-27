@@ -251,6 +251,40 @@ class DowngradeTest(PolicyCase):
         self.port("openssl", "3.5.6", "1")
         self.assertEqual(self.run_check()[0], 1)
 
+    def test_build_metadata_orders_as_the_semver_crate_does(self) -> None:
+        key = publish_policy.semver_key
+        self.assertLess(key("1.0.0"), key("1.0.0+a"))
+        self.assertLess(key("1.0.0+a"), key("1.0.0+b"))
+        self.assertLess(key("1.0.0+a"), key("1.0.0+a.1"))
+        # Digit runs: by value, then by length; below alphanumeric identifiers.
+        for lower, higher in [("0", "00"), ("00", "1"), ("1", "01"), ("01", "001"), ("002", "10"), ("9", "a")]:
+            self.assertLess(key(f"1.0.0+{lower}"), key(f"1.0.0+{higher}"), (lower, higher))
+        # Build metadata ranks after the prerelease: a release with metadata is still above
+        # every prerelease.
+        self.assertLess(key("1.0.0-rc.1+z"), key("1.0.0"))
+        self.publish("tool", ("1.0.0+b", "yurt_0"))
+        self.port("tool", "1.0.0+a", "yurt_1")
+        self.assertEqual(self.run_check()[0], 1)
+        self.publish("tool", ("1.0.0", "yurt_0"))
+        self.port("tool", "1.0.0+a", "yurt_0")
+        self.assertEqual(self.run_check()[0], 0)
+
+    def test_only_what_the_semver_crate_parses_is_a_version(self) -> None:
+        key = publish_policy.semver_key
+        for bad in ["1.0.0\n", "1\u0663.0.0", "18446744073709551616.0.0", "01.0.0", "1.0.0-01", "1.0", "1.0.0+"]:
+            self.assertIsNone(key(bad), repr(bad))
+        self.assertIsNotNone(key("18446744073709551615.0.0"))
+        self.assertIsNotNone(key("1.0.0-0a.01a+001"))
+
+    def test_yurt_build_numbers_parse_as_rust_u64(self) -> None:
+        rank = publish_policy.build_rank
+        self.assertEqual(rank("yurt_7"), 7)
+        self.assertEqual(rank("yurt_01"), 1)
+        self.assertEqual(rank("yurt_+5"), 5)
+        self.assertEqual(rank("yurt_18446744073709551615"), 2**64 - 1)
+        for zero in ["yurt_18446744073709551616", "yurt_\u0663", "yurt_", "yurt_-1", "yurt_1\n", "1", "yurt_1a"]:
+            self.assertEqual(rank(zero), 0, repr(zero))
+
     def test_a_manifest_version_that_is_not_semver_is_refused(self) -> None:
         self.publish("sudo", ("1.9.17", "yurt_0"))
         self.port("sudo", "1.9.17p2", "yurt_0")
