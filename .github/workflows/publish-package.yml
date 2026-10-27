@@ -35,6 +35,11 @@ on:
           - make
           - zstd
           - pkgconf
+      ports_sha:
+        description: "yurt-ports commit to build from (full 40-hex SHA, in yurt-ports main's history); empty: main's head. The Python set (python, numpy, pyzmq, jupyter-kernel) is published from one commit: pass the same one to all four."
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -57,20 +62,6 @@ jobs:
       # line") for every port with registry-ported crates, rtk among them.
       CARGO_TERM_COLOR: never
     steps:
-      # The yurt-ports directory a package is built from: its name, except
-      # python, whose port is cpython (the port builds the interpreter, the
-      # package is what a user installs).
-      - name: Resolve the port
-        id: port
-        env:
-          PACKAGE: ${{ inputs.package }}
-        run: |
-          set -euo pipefail
-          case "$PACKAGE" in
-            python) echo "dir=cpython" >> "$GITHUB_OUTPUT" ;;
-            *) echo "dir=$PACKAGE" >> "$GITHUB_OUTPUT" ;;
-          esac
-
       - name: Check out yurt-packages
         uses: actions/checkout@v7
         with:
@@ -80,15 +71,36 @@ jobs:
           # git config (the commit step pushes with it explicitly).
           persist-credentials: false
 
+      - name: The yurt-ports commit is well-formed
+        env:
+          PORTS_SHA: ${{ inputs.ports_sha }}
+        run: |
+          set -euo pipefail
+          [[ -z "$PORTS_SHA" || "$PORTS_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+            { echo "::error::ports_sha must be empty or a full 40-hex commit SHA"; exit 1; }
+
       - name: Check out yurt-ports
         uses: actions/checkout@v7
         with:
           repository: YurtOS/yurt-ports
           path: yurt-ports
+          ref: ${{ inputs.ports_sha }}
+          # main's history, for the check below.
+          fetch-depth: 0
           token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
           # Read once here: no build step finds the token in a clone's
           # git config (the commit step pushes with it explicitly).
           persist-credentials: false
+
+      # Only what yurt-ports main has had: a commit off main (a pull
+      # request's branch, say) is never published.
+      - name: The yurt-ports commit is on main
+        working-directory: yurt-ports
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor HEAD origin/main ||
+            { echo "::error::yurt-ports $(git rev-parse HEAD) is not in main's history"; exit 1; }
+          echo "building yurt-ports $(git rev-parse HEAD)"
 
       - name: Check out yurt-pkg
         uses: actions/checkout@v7
@@ -141,7 +153,7 @@ jobs:
 
       - name: Reject duplicate package version
         env:
-          PORT: ${{ steps.port.outputs.dir }}
+          PORT: ${{ inputs.package }}
         run: |
           set -euxo pipefail
           cargo run --manifest-path yurt-pkg/Cargo.toml -p yurt-repo-ci -- \
@@ -238,16 +250,16 @@ jobs:
           # curl stage itself needs the zlib and OpenSSL stages. The cpython
           # chain is yurt-ports' scripts/build-playground-image.sh order:
           # numpy and pyzmq compile against cpython-base (the interpreter
-          # without them), and python's interpreter (built by the cpython
-          # port's package.sh) links numpy's and pyzmq's extensions in. perl
-          # links zlib and bzip2.
+          # without them), and the cpython step links their extensions into
+          # the interpreter the python package (ports/python) is composed
+          # from. perl links zlib and bzip2.
           chain="zlib bzip2 xz openssl libzmq sqlite cpython-base"
           case "$PACKAGE" in
             curl) ports="zlib openssl" ;;
             git) ports="zlib openssl curl" ;;
             numpy) ports="$chain numpy" ;;
             pyzmq) ports="$chain pyzmq" ;;
-            python) ports="$chain pyzmq numpy" ;;
+            python) ports="$chain pyzmq numpy cpython" ;;
             perl) ports="zlib bzip2" ;;
           esac
           # yurt-ports' port-cache.sh names each step (cpython-base is the
@@ -271,7 +283,7 @@ jobs:
           YURT_CLANG_SOURCE: ${{ github.workspace }}/sources/yurt-clang
           YURT_GO_SOURCE: ${{ github.workspace }}/sources/yurt-go
           HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}
-          PORT: ${{ steps.port.outputs.dir }}
+          PORT: ${{ inputs.package }}
           # node's port fetches its pinned YurtOS/yurt-node release (private)
           # with gh: the one build that gets the token in its environment.
           GH_TOKEN: ${{ inputs.package == 'node' && secrets.PACKAGE_PUBLISH_TOKEN || '' }}
@@ -284,7 +296,7 @@ jobs:
 
       - name: Publish package metadata
         env:
-          PORT: ${{ steps.port.outputs.dir }}
+          PORT: ${{ inputs.package }}
         run: |
           set -euxo pipefail
           generated_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"

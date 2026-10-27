@@ -186,14 +186,16 @@ class PublishPackagePortsTest(unittest.TestCase):
     def step(self, name: str) -> dict:
         return next(step for step in self.steps if step.get("name") == name)
 
-    def test_python_is_built_by_the_cpython_port(self) -> None:
-        resolve = self.step("Resolve the port")["run"]
-        self.assertIn("python) echo \"dir=cpython\"", resolve)
-        self.assertEqual(self.steps.index(self.step("Resolve the port")), 0)
-        for name in ["Reject duplicate package version", "Build package artifact", "Publish package metadata"]:
-            step = self.step(name)
-            self.assertEqual(step["env"]["PORT"], "${{ steps.port.outputs.dir }}", name)
-            self.assertNotIn("inputs.package }}/", step["run"], name)
+    def test_ports_commit_is_an_input_and_must_be_on_main(self) -> None:
+        trigger = self.wf.get("on", self.wf.get(True))
+        self.assertIn("ports_sha", trigger["workflow_dispatch"]["inputs"])
+        checkout = self.step("Check out yurt-ports")["with"]
+        self.assertEqual(checkout["ref"], "${{ inputs.ports_sha }}")
+        self.assertEqual(checkout["fetch-depth"], 0)
+        names = [step.get("name") for step in self.steps]
+        self.assertLess(names.index("The yurt-ports commit is well-formed"), names.index("Check out yurt-ports"))
+        self.assertIn("git merge-base --is-ancestor HEAD origin/main", self.step("The yurt-ports commit is on main")["run"])
+        self.assertLess(names.index("The yurt-ports commit is on main"), names.index("Build package artifact"))
 
     def test_the_cpython_chain_is_built_before_its_packages(self) -> None:
         deps = self.step("Build dependency stages")
@@ -202,7 +204,7 @@ class PublishPackagePortsTest(unittest.TestCase):
         run = deps["run"]
         self.assertIn('chain="zlib bzip2 xz openssl libzmq sqlite cpython-base"', run)
         # python's interpreter links numpy's and pyzmq's extensions in.
-        self.assertIn('python) ports="$chain pyzmq numpy" ;;', run)
+        self.assertIn('python) ports="$chain pyzmq numpy cpython" ;;', run)
         # numpy and pyzmq build here, against cpython-base (their own
         # build.sh outside port-cache.sh would look for cpython's full
         # stage), and the package step only packs them.

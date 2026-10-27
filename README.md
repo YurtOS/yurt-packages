@@ -26,15 +26,23 @@ this repository. The workflow checks out the source-light port from
 `version`/`build` is expected to fail before repository files are modified.
 It never commits `index.json` or a bundle: `Release` does that (below).
 
-Most packages build from the yurt-ports port of the same name. Exceptions:
+Each package builds from the yurt-ports port of the same name, at yurt-ports
+main's head or at the `ports_sha` input (a commit in main's history). Every
+package publishes on its own: no image or playground release is involved, and
+a sandbox picks up a new build with `pkg update` / `pkg upgrade`. Notes:
 
-- `python` is built by the `cpython` port. Its interpreter has NumPy's and
-  pyzmq's C extensions linked in, so the run first builds the cpython chain
-  (zlib, bzip2, xz, OpenSSL, libzmq, SQLite, the interpreter they compile
-  against, pyzmq, numpy) with yurt-ports' `scripts/port-cache.sh`, cache off.
-  `numpy` and `pyzmq` build the same chain up to that interpreter. Publish the
-  three from the same yurt-ports commit: the `numpy` and `pyzmq` packages hold
-  only the Python files that go with that interpreter's extensions.
+- **The Python set** (`python`, `numpy`, `pyzmq`, `jupyter-kernel`) is the
+  exception. `python`'s interpreter has NumPy's and pyzmq's C extensions linked
+  in, and the `numpy` and `pyzmq` packages hold only the Python files that go
+  with them. So publish all four from one yurt-ports commit (the same
+  `ports_sha`), with the one `yurt_N` build they share in yurt-ports, which marks
+  the set; the playground installs the newest build all four have.
+  - Each run builds the cpython chain first, with yurt-ports'
+    `scripts/port-cache.sh`, cache off: zlib, bzip2, xz, OpenSSL, libzmq,
+    SQLite and the interpreter the extensions compile against.
+  - `python` then builds pyzmq, numpy and the interpreter with them linked in,
+    and packs it.
+  - `numpy` and `pyzmq` build themselves.
 - `jupyter-kernel` fetches the pinned, public `jupyter-payload-v0.0.1`
   release of this repository; nothing is built.
 - `node` stages a release of the private YurtOS/yurt-node, which its port
