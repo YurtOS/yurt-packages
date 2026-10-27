@@ -47,7 +47,8 @@ publish of the same package, or its removal; dispatch the publish again on the
 new main if it should still go out.
 
 **Publish when the version changes.** Archives are committed to git, so every
-publish grows the repository for good (the Python set adds about 23 MB). Before
+publish grows the repository for good (the Python set adds about 23 MB, and
+`python-dev` another 38 MB). Before
 anything is built, the workflow's "Publish only a new version" step
 (`tools/publish_policy.py`) compares the port's `yurt-pack.toml` with
 `packages/<name>.json`:
@@ -98,7 +99,8 @@ publish runs from this repository's main only. The packages this workflow
 gained with the slim playground need yurt-ports#265 on main: python,
 jupyter-kernel, python-seal, numpy's and pyzmq's skipped rebuild, and node's and
 gemini-cli's `yurt_N` builds (published before it, they would go out as
-`22.23.3-3` and `0.64.0-1`, which pkg ranks equal to a later `yurt_0`). Every
+`22.23.3-3` and `0.64.0-1`, which pkg ranks equal to a later `yurt_0`).
+`python-dev` needs yurt-ports#275 (f4ff9bc), which added its port. Every
 package publishes on its own: no image or playground release is involved, and
 a sandbox picks up a new build with `pkg update` / `pkg upgrade`. Notes:
 
@@ -112,10 +114,14 @@ a sandbox picks up a new build with `pkg update` / `pkg upgrade`. Notes:
   yurt-ports commit (the same `ports_sha`), with the one `yurt_N`
   build they share in yurt-ports, which marks the set; the playground installs
   the newest build the first four have, and a suspended notebook resumes only
-  on the set it was suspended with.
-  - The `python`, `numpy`, `pyzmq` and `python-dev` runs build the cpython chain first, with yurt-ports'
-    `scripts/port-cache.sh`, cache off: zlib, bzip2, xz, OpenSSL, libzmq,
-    SQLite and the interpreter the extensions compile against.
+  on the set it was suspended with. `python-dev` joined the set after the
+  rest of 3.14.7 `yurt_0` was published (from yurt-ports b1760fa), so its
+  first build comes from f4ff9bc. Nothing the cpython chain builds from
+  changed between the two, and the shared `yurt_0` marks it as the same set.
+  - The `python`, `numpy`, `pyzmq` and `python-dev` runs build the cpython
+    chain first, with yurt-ports' `scripts/port-cache.sh`, cache off: zlib,
+    bzip2, xz, OpenSSL, libzmq, SQLite and the interpreter the extensions
+    compile against.
   - `python` then builds pyzmq, numpy and the interpreter with them linked in,
     and packs it.
   - `numpy` and `pyzmq` build themselves.
