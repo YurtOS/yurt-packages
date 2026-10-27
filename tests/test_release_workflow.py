@@ -180,9 +180,9 @@ class PublishPackagePortsTest(unittest.TestCase):
 
     def setUp(self) -> None:
         self.wf = load(PUBLISH)
-        # The build job's steps; step() also finds the publish job's.
+        # The build job's steps; step() also finds the publish and push jobs'.
         self.steps = self.wf["jobs"]["build"]["steps"]
-        self.publish_steps = self.wf["jobs"]["publish"]["steps"]
+        self.publish_steps = self.wf["jobs"]["publish"]["steps"] + self.wf["jobs"]["push"]["steps"]
 
     def step(self, name: str) -> dict:
         return next(step for step in self.steps + self.publish_steps if step.get("name") == name)

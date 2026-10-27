@@ -1,9 +1,10 @@
-"""Publish Package runs as two jobs with least-privilege tokens.
+"""Publish Package runs as three jobs with least-privilege tokens.
 
 `build` runs the port's build with a read-only token and a GITHUB_TOKEN that cannot write, and
 hands over only the archive. `publish` runs on a fresh runner, runs no port or build code, checks
-the archive as data, commits only that package's files, and holds the push token in its last
-step only. This file pins those properties, and runs the publish job's archive check against
+the archive as data, commits only that package's files, and hands over only a bundle of that
+commit. `push`, on another fresh runner, runs nothing but git: it verifies the commit and holds
+the push token in its last step only. This file pins those properties, and runs the publish job's archive check against
 local fixtures.
 """
 
@@ -35,26 +36,65 @@ class JobSplitTest(unittest.TestCase):
         self.wf = load()
         self.build = self.wf["jobs"]["build"]
         self.publish = self.wf["jobs"]["publish"]
+        self.push = self.wf["jobs"]["push"]
 
     def names(self, job: dict) -> list[str]:
         return [step.get("name") for step in job["steps"]]
 
-    def test_two_jobs_publish_after_build(self) -> None:
-        self.assertEqual(list(self.wf["jobs"]), ["build", "publish"])
+    def test_three_jobs_build_publish_push(self) -> None:
+        self.assertEqual(list(self.wf["jobs"]), ["build", "publish", "push"])
         self.assertEqual(self.publish["needs"], "build")
+        self.assertEqual(self.push["needs"], ["build", "publish"])
+        # Nothing to push when the publish job committed nothing.
+        self.assertEqual(self.push["if"], "${{ needs.publish.outputs.commit_artifact_id != '' }}")
 
     def test_no_token_the_workflow_hands_out_can_write(self) -> None:
         self.assertEqual(self.wf["permissions"], {})
         self.assertEqual(self.build["permissions"], {"contents": "read"})
         self.assertEqual(self.publish["permissions"], {"contents": "read"})
+        self.assertEqual(self.push["permissions"], {"contents": "read"})
 
-    def test_the_push_token_is_in_the_last_publish_step_only(self) -> None:
+    def test_the_push_token_is_in_the_last_push_step_only(self) -> None:
         text = PUBLISH.read_text()
         self.assertEqual(text.count("secrets.PACKAGE_PUBLISH_TOKEN"), 1)
-        last = self.publish["steps"][-1]
+        last = self.push["steps"][-1]
         self.assertEqual(last["name"], "Push to main")
         self.assertEqual(last["env"], {"PUSH_TOKEN": "${{ secrets.PACKAGE_PUBLISH_TOKEN }}"})
         self.assertNotIn("PACKAGE_PUBLISH_TOKEN", yaml.safe_dump(self.build))
+        self.assertNotIn("PACKAGE_PUBLISH_TOKEN", yaml.safe_dump(self.publish))
+
+    def test_the_push_job_runs_nothing_but_git(self) -> None:
+        # No cargo, no toolchain, no code from any checkout: the job that holds the token runs
+        # only the workflow's own shell and git on a credential-less checkout of this run's commit.
+        uses = sorted({step["uses"].split("@")[0] for step in self.push["steps"] if "uses" in step})
+        self.assertEqual(uses, ["actions/checkout", "actions/download-artifact"])
+        dumped = yaml.safe_dump(self.push)
+        for foreign in ["cargo", "python", "yurt-pkg", "yurt-ports", "rust-toolchain", "setup-", "GITHUB_PATH", "GITHUB_ENV"]:
+            self.assertNotIn(foreign, dumped, foreign)
+        checkouts = [step for step in self.push["steps"] if step.get("uses", "").startswith("actions/checkout@")]
+        self.assertEqual(len(checkouts), 1)
+        self.assertEqual(checkouts[0]["with"], {"path": "yurt-packages", "persist-credentials": False})
+        self.assertEqual(self.push["steps"][0]["name"], "Runs on main only")
+
+    def test_the_publish_job_hands_over_only_a_bundle_of_its_commit(self) -> None:
+        commit = next(step for step in self.publish["steps"] if step.get("name") == "Commit repository update")
+        self.assertEqual(commit["id"], "commit")
+        self.assertIn('git bundle create "$RUNNER_TEMP/handover/commit.bundle"', commit["run"])
+        self.assertIn('echo "committed=true" >> "$GITHUB_OUTPUT"', commit["run"])
+        upload = next(step for step in self.publish["steps"] if step.get("name") == "Upload the commit")
+        self.assertEqual(upload["if"], "${{ steps.commit.outputs.committed == 'true' }}")
+        self.assertEqual(upload["with"]["path"], "${{ runner.temp }}/handover/commit.bundle")
+        self.assertEqual(upload["with"]["if-no-files-found"], "error")
+        self.assertEqual(self.publish["outputs"], {"commit_artifact_id": "${{ steps.upload-commit.outputs.artifact-id }}"})
+        names = self.names(self.push)
+        ids = self.push["steps"][names.index("Check the handover")]
+        self.assertEqual(ids["env"], {"ARTIFACT_ID": "${{ needs.publish.outputs.commit_artifact_id }}", "SHA256": "${{ needs.build.outputs.sha256 }}"})
+        self.assertIn('[[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]]', ids["run"])
+        self.assertIn('[[ "$SHA256" =~ ^[0-9a-f]{64}$ ]]', ids["run"])
+        download = self.push["steps"][names.index("Download the commit")]
+        self.assertEqual(download["with"]["artifact-ids"], "${{ steps.handover.outputs.artifact_id }}")
+        order = ["Check out yurt-packages", "Check the handover", "Download the commit", "Verify the commit", "Push to main"]
+        self.assertEqual([n for n in names if n in order], order)
 
     def test_the_build_job_reads_with_the_read_token_only(self) -> None:
         dumped = yaml.safe_dump(self.build)
@@ -63,7 +103,7 @@ class JobSplitTest(unittest.TestCase):
 
     def test_the_publish_job_runs_no_build_code(self) -> None:
         uses = sorted({step["uses"].split("@")[0] for step in self.publish["steps"] if "uses" in step})
-        self.assertEqual(uses, ["actions/checkout", "actions/download-artifact", "dtolnay/rust-toolchain"])
+        self.assertEqual(uses, ["actions/checkout", "actions/download-artifact", "actions/upload-artifact", "dtolnay/rust-toolchain"])
         dumped = yaml.safe_dump(self.publish)
         for build_only in ["package.sh", "port-cache.sh", "install-yurt-sdk", "rust-cache", "curl ", "setup-"]:
             self.assertNotIn(build_only, dumped, build_only)

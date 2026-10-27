@@ -1,6 +1,8 @@
-"""Runs publish-package.yml's "Commit repository update" step against a local bare repository.
+"""Runs publish-package.yml's commit, hand-over and push steps against a local bare repository.
 
-The step commits one package's archive and metadata and pushes it to main. Other writers (a
+The publish job's "Commit repository update" step commits one package's archive and metadata
+and bundles the commit. The push job, on a fresh checkout of the run's commit, verifies the
+bundle ("Verify the commit") and pushes it to main ("Push to main"). Other writers (a
 merged pull request, a Release run) push to main while the build runs, so the step must rebase
 onto a main that moved and retry, and still refuse a main that changed the same package's files.
 Each test clones a bare "origin" (shallow, as actions/checkout does), stages what publish-local
@@ -9,6 +11,7 @@ leaves behind, lets another writer move main, and runs the step's script with ba
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -27,10 +30,12 @@ ROOT = Path(__file__).resolve().parent.parent
 PUBLISH = ROOT / ".github" / "workflows" / "publish-package.yml"
 REAL_GIT = shutil.which("git")
 ARCHIVE = "artifacts/zstd/1.5.7/zstd-1.5.7-1.yurtpkg"
+ARCHIVE_TEXT = "zstd archive\n"
+ARCHIVE_SHA256 = hashlib.sha256(ARCHIVE_TEXT.encode()).hexdigest()
 
 
-def step(name: str) -> dict:
-    steps = yaml.safe_load(PUBLISH.read_text())["jobs"]["publish"]["steps"]
+def step(name: str, job: str = "publish") -> dict:
+    steps = yaml.safe_load(PUBLISH.read_text())["jobs"][job]["steps"]
     return next(step for step in steps if step.get("name") == name)
 
 
@@ -38,8 +43,12 @@ def commit_step() -> str:
     return step("Commit repository update")["run"]
 
 
+def verify_step() -> str:
+    return step("Verify the commit", "push")["run"]
+
+
 def push_step() -> str:
-    return step("Push to main")["run"]
+    return step("Push to main", "push")["run"]
 
 
 class PublishPushTest(unittest.TestCase):
@@ -105,7 +114,7 @@ class PublishPushTest(unittest.TestCase):
         if self.work.exists():
             shutil.rmtree(self.work)
         self.git("clone", "-q", "--depth", "1", f"file://{self.origin}", str(self.work))
-        self.write(self.work / ARCHIVE, "zstd archive\n")
+        self.write(self.work / ARCHIVE, ARCHIVE_TEXT)
         self.write(self.work / f"{ARCHIVE}.bundle", "local test fixture bundle\n")
         self.write(self.work / "packages/zstd.json", '{"name": "zstd", "versions": ["1.5.7-1"]}\n')
         self.write(self.work / "index.json", json.dumps({"index_version": 40}) + "\n")
@@ -169,36 +178,73 @@ class PublishPushTest(unittest.TestCase):
         hook.chmod(0o755)
         return {"PUSH_HOOK": str(hook)}
 
-    def run_step(self, extra: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-        """The publish job's "Commit repository update" step, then (if it passed) "Push to main",
-        each with only the env the workflow gives it, as GitHub runs consecutive steps."""
-        runner_temp = self.tmp / "runner-temp"
-        runner_temp.mkdir(exist_ok=True)
+    def run_step(
+        self,
+        extra: dict[str, str] | None = None,
+        tamper=None,
+        sha256: str = ARCHIVE_SHA256,
+    ) -> subprocess.CompletedProcess[str]:
+        """The publish job's "Commit repository update" step; then, on a fresh runner, the push
+        job's "Verify the commit" and "Push to main", each step with only the env the workflow
+        gives it. `tamper(work)` stands in for a publish job that changes its commit after the
+        commit step: it runs on the publish clone, and the hand-over bundle is made again."""
+        publish_temp = self.tmp / "publish-temp"
+        publish_temp.mkdir(exist_ok=True)
+        outputs = publish_temp / "github-output"
+        outputs.write_text("")
         base = {
             **self.env,
             "PATH": f"{self.bin}{os.pathsep}{self.env['PATH']}",
-            "RUNNER_TEMP": str(runner_temp),
             **(extra or {}),
         }
-        commit = self.run_script(commit_step(), {**base, "PACKAGE": "zstd", "ARCHIVE": ARCHIVE})
-        if commit.returncode != 0:
-            return commit
-        push = self.run_script(push_step(), {**base, "PUSH_TOKEN": "not-a-token"})
-        return subprocess.CompletedProcess(
-            push.args, push.returncode, commit.stdout + push.stdout, commit.stderr + push.stderr
+        commit = self.run_script(
+            commit_step(),
+            {**base, "RUNNER_TEMP": str(publish_temp), "GITHUB_OUTPUT": str(outputs), "PACKAGE": "zstd", "ARCHIVE": ARCHIVE},
+            self.work,
         )
+        bundle = publish_temp / "handover" / "commit.bundle"
+        if commit.returncode != 0 or not bundle.exists():
+            return commit
+        self.assertIn("committed=true", outputs.read_text())
+        if tamper is not None:
+            tamper(self.work)
+            bundle.unlink()
+            self.git("bundle", "create", str(bundle), "HEAD", f"^{self.start}", cwd=self.work)
+        # The push job: a fresh runner, a checkout of the run's commit, the bundle downloaded.
+        push_temp = self.tmp / "push-temp"
+        (push_temp / "handover").mkdir(parents=True, exist_ok=True)
+        shutil.copy(bundle, push_temp / "handover" / "commit.bundle")
+        clone = self.tmp / "push-clone"
+        if clone.exists():
+            shutil.rmtree(clone)
+        self.git("init", "-q", str(clone))
+        self.git("remote", "add", "origin", f"file://{self.origin}", cwd=clone)
+        self.git("fetch", "-q", "--depth", "1", "origin", self.start, cwd=clone)
+        self.git("checkout", "-q", "-B", "main", "FETCH_HEAD", cwd=clone)
+        env = {**base, "RUNNER_TEMP": str(push_temp)}
+        verify = self.run_script(verify_step(), {**env, "PACKAGE": "zstd", "SHA256": sha256}, clone)
+        out, err = commit.stdout + verify.stdout, commit.stderr + verify.stderr
+        if verify.returncode != 0:
+            return subprocess.CompletedProcess(verify.args, verify.returncode, out, err)
+        push = self.run_script(push_step(), {**env, "PUSH_TOKEN": "not-a-token"}, clone)
+        return subprocess.CompletedProcess(push.args, push.returncode, out + push.stdout, err + push.stderr)
 
-    def run_script(self, text: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    def run_script(self, text: str, env: dict[str, str], cwd: Path) -> subprocess.CompletedProcess[str]:
         script = self.tmp / "step.sh"
         script.write_text(text)
         # GitHub's shell for `run:` steps.
         return subprocess.run(
             ["bash", "--noprofile", "--norc", "-eo", "pipefail", str(script)],
-            cwd=self.work,
+            cwd=cwd,
             env=env,
             capture_output=True,
             text=True,
         )
+
+    def assert_not_pushed(self, result: subprocess.CompletedProcess[str], message: str) -> None:
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(message, result.stdout + result.stderr)
+        self.assertEqual(self.head(), self.start)
 
     def assert_published_on(self, parent: str, result: subprocess.CompletedProcess[str]) -> None:
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -218,19 +264,63 @@ class PublishPushTest(unittest.TestCase):
     def test_pushes_when_main_did_not_move(self) -> None:
         self.assert_published_on(self.start, self.run_step())
 
-    def test_no_repository_hook_runs_with_the_push_token(self) -> None:
-        # Earlier steps run yurt-repo-ci (and its crates' build scripts) with write access to
-        # yurt-packages/.git. A hook planted there must not run in the step that has the token.
-        marker = self.tmp / "hook-saw-token"
-        hooks = self.work / ".git" / "hooks"
-        hooks.mkdir(parents=True, exist_ok=True)
-        for name in ["pre-push", "post-rewrite", "post-checkout", "pre-rebase", "reference-transaction", "pre-auto-gc"]:
-            hook = hooks / name
-            hook.write_text(f'#!/bin/sh\n[ -z "${{PUSH_TOKEN:-}}" ] || echo "{name}" >> {marker}\nexit 0\n')
-            hook.chmod(0o755)
+    # -- the push job trusts only what it verifies in the bundle ---------------------------
+
+    def amend(self, files: dict[str, str | None]):
+        def tamper(work: Path) -> None:
+            for rel, text in files.items():
+                if text is None:
+                    self.git("rm", "-q", rel, cwd=work)
+                else:
+                    self.write(work / rel, text)
+                    self.git("add", rel, cwd=work)
+            self.git("commit", "-q", "--amend", "--no-edit", cwd=work)
+
+        return tamper
+
+    def test_the_push_job_refuses_a_commit_that_changes_another_path(self) -> None:
+        result = self.run_step(tamper=self.amend({"packages/zlib.json": '{"name": "zlib", "tampered": true}\n'}))
+        self.assert_not_pushed(result, "packages/zlib.json")
+
+    def test_the_push_job_refuses_an_index_or_bundle(self) -> None:
+        result = self.run_step(tamper=self.amend({"index.json": "{}\n"}))
+        self.assert_not_pushed(result, "index.json")
+
+    def test_the_push_job_refuses_an_archive_the_build_did_not_make(self) -> None:
+        result = self.run_step(tamper=self.amend({ARCHIVE: "other bytes\n"}))
+        self.assert_not_pushed(result, "sha256")
+
+    def test_the_push_job_refuses_the_build_s_hash_on_other_bytes(self) -> None:
+        self.assert_not_pushed(self.run_step(sha256="0" * 64), "sha256")
+
+    def test_the_push_job_refuses_a_second_commit(self) -> None:
+        def tamper(work: Path) -> None:
+            self.write(work / "README.md", "more\n")
+            self.git("add", "README.md", cwd=work)
+            self.git("commit", "-q", "-m", "extra", cwd=work)
+
+        self.assert_not_pushed(self.run_step(tamper=tamper), "one commit on")
+
+    def test_the_push_job_refuses_a_commit_on_another_parent(self) -> None:
         moved = self.move_main({"README.md": "docs\n"})
-        self.assert_published_on(moved, self.run_step())
-        self.assertFalse(marker.exists(), marker.read_text() if marker.exists() else "")
+
+        def tamper(work: Path) -> None:
+            self.git("fetch", "-q", "origin", "main", cwd=work)
+            self.git("rebase", "-q", "FETCH_HEAD", cwd=work)
+
+        result = self.run_step(tamper=tamper)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("one commit on", result.stdout + result.stderr)
+        self.assertEqual(self.head(), moved)
+
+    def test_the_push_job_refuses_an_archive_that_is_a_symlink(self) -> None:
+        def tamper(work: Path) -> None:
+            (work / ARCHIVE).unlink()
+            (work / ARCHIVE).symlink_to("../../../packages/zstd.json")
+            self.git("add", ARCHIVE, cwd=work)
+            self.git("commit", "-q", "--amend", "--no-edit", cwd=work)
+
+        self.assert_not_pushed(self.run_step(tamper=tamper), "regular file")
 
     def test_rebases_onto_a_main_that_moved_elsewhere(self) -> None:
         # The zstd case: a pull request merged during the build, and Release signed another
@@ -362,14 +452,18 @@ class PublishPushTest(unittest.TestCase):
 class PublishPushStaticTest(unittest.TestCase):
     def test_no_expression_reaches_the_shell(self) -> None:
         self.assertNotIn("${{", commit_step())
+        self.assertNotIn("${{", verify_step())
         self.assertNotIn("${{", push_step())
 
     def test_only_the_push_step_gets_the_push_token(self) -> None:
         self.assertNotIn("PUSH_TOKEN", step("Commit repository update").get("env", {}))
-        self.assertEqual(step("Push to main")["env"], {"PUSH_TOKEN": "${{ secrets.PACKAGE_PUBLISH_TOKEN }}"})
+        self.assertEqual(step("Verify the commit", "push")["env"], {"PACKAGE": "${{ inputs.package }}", "SHA256": "${{ needs.build.outputs.sha256 }}"})
+        self.assertEqual(step("Push to main", "push")["env"], {"PUSH_TOKEN": "${{ secrets.PACKAGE_PUBLISH_TOKEN }}"})
 
     def test_a_dry_run_stops_before_the_push(self) -> None:
-        self.assertEqual(step("Push to main")["if"], "${{ !inputs.dry_run }}")
+        # The push job still verifies the commit on a dry run; only the push is skipped.
+        self.assertEqual(step("Push to main", "push")["if"], "${{ !inputs.dry_run }}")
+        self.assertNotIn("if", step("Verify the commit", "push"))
 
 
 if __name__ == "__main__":

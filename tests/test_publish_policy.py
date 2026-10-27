@@ -308,7 +308,7 @@ class PolicyWorkflowTest(unittest.TestCase):
         # checkout, before publish-local and the commit).
         for job, later_steps in [
             ("build", ["Set up Rust", "Build package artifact", "Upload the archive"]),
-            ("publish", ["Publish package metadata", "Commit repository update", "Push to main"]),
+            ("publish", ["Publish package metadata", "Commit repository update"]),
         ]:
             names = [step.get("name") for step in self.wf["jobs"][job]["steps"]]
             step = self.wf["jobs"][job]["steps"][names.index("Publish only a new version")]
