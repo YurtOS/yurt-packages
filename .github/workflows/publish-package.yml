@@ -29,6 +29,7 @@ on:
           - numpy
           - pyzmq
           - jupyter-kernel
+          - python-seal
           - node
           - gemini-cli
           - perl
@@ -36,7 +37,7 @@ on:
           - zstd
           - pkgconf
       ports_sha:
-        description: "yurt-ports commit to build from (full 40-hex SHA, in yurt-ports main's history); empty: main's head. The Python set (python, numpy, pyzmq, jupyter-kernel) is published from one commit: pass the same one to all four."
+        description: "yurt-ports commit to build from (full 40-hex SHA, in yurt-ports main's history); empty: main's head. The Python set (python, numpy, pyzmq, jupyter-kernel, python-seal) is published from one commit: pass the same one to all five."
         required: false
         type: string
         default: ""
@@ -223,7 +224,9 @@ jobs:
       # release-playground-image.yml does.
       - name: Set up the host Python the cpython chain builds with
         id: host-python
-        if: inputs.package == 'python' || inputs.package == 'numpy' || inputs.package == 'pyzmq'
+        if: >-
+          inputs.package == 'python' || inputs.package == 'numpy' ||
+          inputs.package == 'pyzmq' || inputs.package == 'python-seal'
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
@@ -246,7 +249,8 @@ jobs:
         if: >-
           inputs.package == 'curl' || inputs.package == 'git' ||
           inputs.package == 'python' || inputs.package == 'numpy' ||
-          inputs.package == 'pyzmq' || inputs.package == 'perl'
+          inputs.package == 'pyzmq' || inputs.package == 'python-seal' ||
+          inputs.package == 'perl'
         env:
           YURT_KERNEL_ROOT: ${{ github.workspace }}/yurtos-kernel
           PACKAGE: ${{ inputs.package }}
@@ -270,6 +274,9 @@ jobs:
             numpy) ports="$chain numpy" ;;
             pyzmq) ports="$chain pyzmq" ;;
             python) ports="$chain pyzmq numpy cpython" ;;
+            # The sealable interpreter: C-only, so the chain without
+            # cpython-base; its build checks the kernel would admit it.
+            python-seal) ports="zlib bzip2 xz openssl libzmq sqlite cpython-seal" ;;
             perl) ports="zlib bzip2" ;;
           esac
           # yurt-ports' port-cache.sh names each step (cpython-base is the

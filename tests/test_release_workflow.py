@@ -206,7 +206,7 @@ class PublishPackagePortsTest(unittest.TestCase):
 
     def test_the_cpython_chain_is_built_before_its_packages(self) -> None:
         deps = self.step("Build dependency stages")
-        for package in ["python", "numpy", "pyzmq", "perl", "curl", "git"]:
+        for package in ["python", "numpy", "pyzmq", "python-seal", "perl", "curl", "git"]:
             self.assertIn(f"inputs.package == '{package}'", deps["if"])
         run = deps["run"]
         self.assertIn('chain="zlib bzip2 xz openssl libzmq sqlite cpython-base"', run)
@@ -217,6 +217,8 @@ class PublishPackagePortsTest(unittest.TestCase):
         # stage), and the package step only packs them.
         self.assertIn('numpy) ports="$chain numpy" ;;', run)
         self.assertIn('pyzmq) ports="$chain pyzmq" ;;', run)
+        # The sealable interpreter builds C-only, its admission check included.
+        self.assertIn('python-seal) ports="zlib bzip2 xz openssl libzmq sqlite cpython-seal" ;;', run)
         self.assertEqual(deps["env"]["YURT_PORT_CACHE"], "off")
         self.assertEqual(
             self.step("Build package artifact")["env"]["YURT_PACKAGE_SKIP_BUILD"],
@@ -245,7 +247,7 @@ class PublishPackagePortsTest(unittest.TestCase):
         # PyYAML reads the `on:` key as True.
         trigger = self.wf.get("on", self.wf.get(True))
         options = trigger["workflow_dispatch"]["inputs"]["package"]["options"]
-        for package in ["python", "numpy", "pyzmq", "jupyter-kernel", "node", "gemini-cli", "perl", "make", "zstd", "pkgconf"]:
+        for package in ["python", "numpy", "pyzmq", "jupyter-kernel", "python-seal", "node", "gemini-cli", "perl", "make", "zstd", "pkgconf"]:
             self.assertIn(package, options)
         # The image's bootstrap: an install of sudo would replace the sudo it runs under.
         self.assertNotIn("sudo", options)
