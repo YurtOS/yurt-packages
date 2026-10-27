@@ -103,20 +103,25 @@ package publishes on its own: no image or playground release is involved, and
 a sandbox picks up a new build with `pkg update` / `pkg upgrade`. Notes:
 
 - **The Python set** (`python`, `numpy`, `pyzmq`, `jupyter-kernel`,
-  `python-seal`) is the exception. `python`'s interpreter has NumPy's and
-  pyzmq's C extensions linked in, the `numpy` and `pyzmq` packages hold only
-  the Python files that go with them, and `python-seal` (the playground's
-  Suspend/Resume interpreter) runs `python`'s standard library. So publish all
-  five from one yurt-ports commit (the same `ports_sha`), with the one `yurt_N`
+  `python-seal`, `python-dev`) is the exception. `python`'s interpreter has
+  NumPy's and pyzmq's C extensions linked in, the `numpy` and `pyzmq` packages
+  hold only the Python files that go with them, `python-seal` (the
+  playground's Suspend/Resume interpreter) runs `python`'s standard library,
+  and `python-dev` holds the headers and static libpython of `python`'s
+  cpython build, for compiling extensions. So publish all six from one
+  yurt-ports commit (the same `ports_sha`), with the one `yurt_N`
   build they share in yurt-ports, which marks the set; the playground installs
   the newest build the first four have, and a suspended notebook resumes only
   on the set it was suspended with.
-  - The `python`, `numpy` and `pyzmq` runs build the cpython chain first, with yurt-ports'
+  - The `python`, `numpy`, `pyzmq` and `python-dev` runs build the cpython chain first, with yurt-ports'
     `scripts/port-cache.sh`, cache off: zlib, bzip2, xz, OpenSSL, libzmq,
     SQLite and the interpreter the extensions compile against.
   - `python` then builds pyzmq, numpy and the interpreter with them linked in,
     and packs it.
   - `numpy` and `pyzmq` build themselves.
+  - `python-dev` builds the same chain as `python` and packs the headers,
+    `libpython3.14.a`, `config-3.14` and pkg-config files from its cpython
+    stage.
   - `python-seal` builds the C-only sealable interpreter (`cpython-seal`), whose
     build fails if the kernel's checkpoint admission would refuse it.
 - `jupyter-kernel` fetches the pinned, public `jupyter-payload-v0.0.1`
