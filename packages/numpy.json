@@ -1,0 +1,23 @@
+{
+  "name": "numpy",
+  "versions": [
+    {
+      "version": "2.5.0",
+      "build": "yurt_0",
+      "url": "artifacts/numpy/2.5.0/numpy-2.5.0-yurt_0.yurtpkg",
+      "sha256": "c3cc1743278a97636b5f32a10e1b89a45ed9cd1d4d53499f93fcb1cc1641cd14",
+      "size": 4474099,
+      "signing": {
+        "subject": "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main",
+        "issuer": "https://token.actions.githubusercontent.com"
+      },
+      "depends": [
+        {
+          "name": "python",
+          "req": "^3.14"
+        }
+      ],
+      "yanked": false
+    }
+  ]
+}
