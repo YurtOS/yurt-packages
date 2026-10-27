@@ -218,6 +218,20 @@ class PublishPushTest(unittest.TestCase):
     def test_pushes_when_main_did_not_move(self) -> None:
         self.assert_published_on(self.start, self.run_step())
 
+    def test_no_repository_hook_runs_with_the_push_token(self) -> None:
+        # Earlier steps run yurt-repo-ci (and its crates' build scripts) with write access to
+        # yurt-packages/.git. A hook planted there must not run in the step that has the token.
+        marker = self.tmp / "hook-saw-token"
+        hooks = self.work / ".git" / "hooks"
+        hooks.mkdir(parents=True, exist_ok=True)
+        for name in ["pre-push", "post-rewrite", "post-checkout", "pre-rebase", "reference-transaction", "pre-auto-gc"]:
+            hook = hooks / name
+            hook.write_text(f'#!/bin/sh\n[ -z "${{PUSH_TOKEN:-}}" ] || echo "{name}" >> {marker}\nexit 0\n')
+            hook.chmod(0o755)
+        moved = self.move_main({"README.md": "docs\n"})
+        self.assert_published_on(moved, self.run_step())
+        self.assertFalse(marker.exists(), marker.read_text() if marker.exists() else "")
+
     def test_rebases_onto_a_main_that_moved_elsewhere(self) -> None:
         # The zstd case: a pull request merged during the build, and Release signed another
         # package's archive.

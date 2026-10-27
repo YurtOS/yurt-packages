@@ -116,6 +116,27 @@ class JobSplitTest(unittest.TestCase):
         names = self.names(self.publish)
         self.assertLess(names.index("The build job's commits are well-formed"), names.index("Check out yurt-pkg"))
 
+    def test_the_publish_job_runs_yurt_pkg_only_from_main(self) -> None:
+        # The build job's outputs are untrusted: pkg_sha must be on yurt-pkg main before any
+        # yurt-repo-ci code runs, and that code builds from the committed lock.
+        names = self.names(self.publish)
+        checkout = self.publish["steps"][names.index("Check out yurt-pkg")]
+        self.assertEqual(checkout["with"]["fetch-depth"], 0)
+        on_main = self.publish["steps"][names.index("The yurt-pkg commit is on main")]
+        self.assertEqual(on_main["working-directory"], "yurt-pkg")
+        self.assertIn("git merge-base --is-ancestor HEAD origin/main", on_main["run"])
+        self.assertLess(names.index("Check out yurt-pkg"), names.index("The yurt-pkg commit is on main"))
+        cargo = [i for i, step in enumerate(self.publish["steps"]) if "cargo run" in step.get("run", "")]
+        self.assertGreaterEqual(len(cargo), 2)
+        for i in cargo:
+            self.assertLess(names.index("The yurt-pkg commit is on main"), i)
+            self.assertIn("cargo run --locked ", self.publish["steps"][i]["run"])
+
+    def test_the_publish_job_builds_the_requested_ports_commit(self) -> None:
+        check = next(step for step in self.publish["steps"] if step.get("name") == "The build job's commits are well-formed")
+        self.assertEqual(check["env"]["REQUESTED_PORTS_SHA"], "${{ inputs.ports_sha }}")
+        self.assertIn('[[ -z "$REQUESTED_PORTS_SHA" || "$PORTS_SHA" = "$REQUESTED_PORTS_SHA" ]]', check["run"])
+
     def test_a_dry_run_never_takes_the_publish_group(self) -> None:
         # A group holds one pending run: a dry run in the shared group would replace a
         # waiting real publish (or rustup-dist publish), and a clang dry run would hold it
