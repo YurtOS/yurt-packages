@@ -35,6 +35,22 @@ already there, or the bundle of the archive it adds. Such a change is another
 publish of the same package, or its removal; dispatch the publish again on the
 new main if it should still go out.
 
+**Publish when the version changes.** Archives are committed to git, so every
+publish grows the repository for good (the Python set adds about 23 MB). Before
+anything is built, the workflow's "Publish only a new version" step
+(`tools/publish_policy.py`) compares the port's `yurt-pack.toml` with
+`packages/<name>.json`:
+
+- A `version`/`build` that is already published is refused, whatever the new
+  archive's bytes: a release is never replaced, and `Release` never re-signs
+  one. An identical rebuild has nothing to add.
+- Another `build` of a published `version` is refused unless the dispatch sets
+  `allow_new_build`. Set it for a packaging fix that has to ship without a
+  version change, and for the Python set, whose shared `yurt_N` build moves
+  without a CPython version change. Bump the port's `build` in yurt-ports
+  first.
+- A new `version`, or a package not published yet, goes ahead.
+
 Each package builds from the yurt-ports port of the same name, at yurt-ports
 main's head or at the `ports_sha` input (a commit in main's history). The
 workflow runs from this repository's main only. The packages this workflow
