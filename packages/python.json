@@ -1,0 +1,23 @@
+{
+  "name": "python",
+  "versions": [
+    {
+      "version": "3.14.7",
+      "build": "yurt_0",
+      "url": "artifacts/python/3.14.7/python-3.14.7-yurt_0.yurtpkg",
+      "sha256": "ab01e884f08e0619d9d871033a7182e5bae3465a8ede07e47a5f1c0cb21c5161",
+      "size": 15492114,
+      "signing": {
+        "subject": "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main",
+        "issuer": "https://token.actions.githubusercontent.com"
+      },
+      "depends": [
+        {
+          "name": "ca-certificates",
+          "req": "^2026.9.25"
+        }
+      ],
+      "yanked": false
+    }
+  ]
+}
