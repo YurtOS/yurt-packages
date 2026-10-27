@@ -175,5 +175,83 @@ class PublishPackageBuildEnvTest(unittest.TestCase):
             self.assertNotIn("CARGO_TERM_COLOR", step.get("run", ""), step.get("name"))
 
 
+
+class PublishPackagePortsTest(unittest.TestCase):
+    """Which yurt-ports directory and which dependency stages each package builds from."""
+
+    def setUp(self) -> None:
+        self.wf = load(PUBLISH)
+        self.steps = self.wf["jobs"]["publish"]["steps"]
+
+    def step(self, name: str) -> dict:
+        return next(step for step in self.steps if step.get("name") == name)
+
+    def test_a_run_off_main_stops_before_anything_else(self) -> None:
+        # The commit step pushes HEAD:main; a dispatch from another branch
+        # must never get there.
+        self.assertEqual(self.steps[0]["name"], "Runs on main only")
+        self.assertEqual(self.steps[0]["env"]["REF"], "${{ github.ref }}")
+        self.assertIn('[ "$REF" = refs/heads/main ]', self.steps[0]["run"])
+
+    def test_ports_commit_is_an_input_and_must_be_on_main(self) -> None:
+        trigger = self.wf.get("on", self.wf.get(True))
+        self.assertIn("ports_sha", trigger["workflow_dispatch"]["inputs"])
+        checkout = self.step("Check out yurt-ports")["with"]
+        self.assertEqual(checkout["ref"], "${{ inputs.ports_sha }}")
+        self.assertEqual(checkout["fetch-depth"], 0)
+        names = [step.get("name") for step in self.steps]
+        self.assertLess(names.index("The yurt-ports commit is well-formed"), names.index("Check out yurt-ports"))
+        self.assertIn("git merge-base --is-ancestor HEAD origin/main", self.step("The yurt-ports commit is on main")["run"])
+        self.assertLess(names.index("The yurt-ports commit is on main"), names.index("Build package artifact"))
+
+    def test_the_cpython_chain_is_built_before_its_packages(self) -> None:
+        deps = self.step("Build dependency stages")
+        for package in ["python", "numpy", "pyzmq", "python-seal", "perl", "curl", "git"]:
+            self.assertIn(f"inputs.package == '{package}'", deps["if"])
+        run = deps["run"]
+        self.assertIn('chain="zlib bzip2 xz openssl libzmq sqlite cpython-base"', run)
+        # python's interpreter links numpy's and pyzmq's extensions in.
+        self.assertIn('python) ports="$chain pyzmq numpy cpython" ;;', run)
+        # numpy and pyzmq build here, against cpython-base (their own
+        # build.sh outside port-cache.sh would look for cpython's full
+        # stage), and the package step only packs them.
+        self.assertIn('numpy) ports="$chain numpy" ;;', run)
+        self.assertIn('pyzmq) ports="$chain pyzmq" ;;', run)
+        # The sealable interpreter builds C-only, its admission check included.
+        self.assertIn('python-seal) ports="zlib bzip2 xz openssl libzmq sqlite cpython-seal" ;;', run)
+        self.assertEqual(deps["env"]["YURT_PORT_CACHE"], "off")
+        self.assertEqual(
+            self.step("Build package artifact")["env"]["YURT_PACKAGE_SKIP_BUILD"],
+            "${{ (inputs.package == 'numpy' || inputs.package == 'pyzmq') && '1' || '0' }}",
+        )
+
+    def test_no_checkout_leaves_the_publish_token_in_a_clone(self) -> None:
+        for step in self.steps:
+            uses = step.get("uses", "")
+            with_ = step.get("with", {})
+            if uses.startswith("actions/checkout@") and "token" in with_:
+                self.assertIs(with_.get("persist-credentials"), False, step.get("name"))
+        commit = self.step("Commit repository update")
+        self.assertEqual(commit["env"]["PUSH_TOKEN"], "${{ secrets.PACKAGE_PUBLISH_TOKEN }}")
+        # The header is built after `set +x`, masked, and given to this push only.
+        run = commit["run"]
+        self.assertLess(run.index("set +x"), run.index("auth=$("))
+        self.assertIn('echo "::add-mask::$auth"', run)
+        self.assertIn('git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" push origin HEAD:main', run)
+
+    def test_only_node_gets_a_token_for_its_build(self) -> None:
+        env = self.step("Build package artifact")["env"]
+        self.assertEqual(env["GH_TOKEN"], "${{ inputs.package == 'node' && secrets.PACKAGE_PUBLISH_TOKEN || '' }}")
+
+    def test_new_packages_are_choices_and_sudo_is_not(self) -> None:
+        # PyYAML reads the `on:` key as True.
+        trigger = self.wf.get("on", self.wf.get(True))
+        options = trigger["workflow_dispatch"]["inputs"]["package"]["options"]
+        for package in ["python", "numpy", "pyzmq", "jupyter-kernel", "python-seal", "node", "gemini-cli", "perl", "make", "zstd", "pkgconf"]:
+            self.assertIn(package, options)
+        # The image's bootstrap: an install of sudo would replace the sudo it runs under.
+        self.assertNotIn("sudo", options)
+
+
 if __name__ == "__main__":
     unittest.main()
