@@ -19,18 +19,25 @@ repository builds those ports, publishes package artifacts, regenerates
 `packages/*.json` and `index.json`, and signs `index.json`.
 
 Publishing is owned by the manual `Publish Package` GitHub Actions workflow in
-this repository. It runs two jobs. `build` checks out the source-light port
-from `YurtOS/yurt-ports`, builds it, and uploads only the `.yurtpkg` (with its
-sha256). `publish`, on a fresh runner, checks that archive against the port's
-manifest at the same yurt-ports commit, runs
-`yurt-repo-ci publish-local --reject-existing` from the yurt-pkg commit the
-build used (which must be on yurt-pkg main), commits the archive and its
-`packages/<name>.json` (nothing else may be staged), and pushes. Re-publishing the same package
+this repository. It runs three jobs, each on a fresh runner:
+- `build` checks out the source-light port from `YurtOS/yurt-ports`, builds it,
+  and uploads only the `.yurtpkg` (with its sha256).
+- `publish` checks that archive against the port's manifest at the same
+  yurt-ports commit, runs `yurt-repo-ci publish-local --reject-existing` from
+  the yurt-pkg commit the build used (which must be on yurt-pkg main), commits
+  the archive and its `packages/<name>.json` (nothing else may be staged), and
+  uploads only a git bundle of that commit.
+- `push` runs nothing but git on a checkout of the run's commit. It pushes the
+  bundle's commit only if it is one commit on that checkout that adds the
+  package's archive (a regular file with the build's sha256) and adds or
+  changes `packages/<name>.json`, and nothing else.
+
+Re-publishing the same package
 `version`/`build` is expected to fail before repository files are modified.
 It never commits `index.json` or a bundle: `Release` does that (below).
 
 Main may move while a package builds (a merged pull request, a `Release`
-run). The commit step then rebases its commit onto the new main and pushes
+run). The push step then rebases the commit onto the new main and pushes
 again, up to five times. It refuses instead, without pushing, when main changed
 the package's own files since the run's checkout: `packages/<name>.json`,
 anything under `artifacts/<name>/` other than the signature bundles of releases
@@ -67,13 +74,15 @@ anything is built, the workflow's "Publish only a new version" step
 **Tokens.** `build` reads the private repositories with `PACKAGE_READ_TOKEN`,
 a repository secret: a fine-grained token with Contents: read on yurt-ports,
 yurt-pkg, yurtos-kernel, yurt-toolchain and yurt-rust (the guest SDK
-installer fetches both releases), yurt-node, yurt-go and yurt-clang. `publish` reads yurt-ports and yurt-pkg with it, and
-only its last step, the push, gets `PACKAGE_PUBLISH_TOKEN`. Neither job's
-`GITHUB_TOKEN` can write. Every checkout keeps no credential
+installer fetches both releases), yurt-node, yurt-go and yurt-clang.
+`publish` reads yurt-ports and yurt-pkg with it. Only the last step of `push`
+gets `PACKAGE_PUBLISH_TOKEN`; `publish`, which builds and runs yurt-repo-ci
+and its crates' build scripts, never sees it. No job's `GITHUB_TOKEN` can
+write. Every checkout keeps no credential
 (`persist-credentials: false`).
 
-**Dry run.** `dry_run: true` builds, checks and commits as a real publish
-does, prints the commit, and stops before the push: the package never reaches
+**Dry run.** `dry_run: true` builds, checks, commits and verifies the commit
+as a real publish does, and stops before the push: the package never reaches
 main. A dry run may be dispatched from any branch, which is how a change to
 this workflow is tried before it merges. `Release` follows only runs on main,
 dry or not: one after a dry run on main finds nothing new to sign, but still
@@ -321,10 +330,12 @@ guards on its own:
   writes cache entries scoped to `main`.
 - `publish-package.yml`'s `build` job restores and saves its own cache
   (`Swatinem/rust-cache`, key `publish-package-build`), with read-only
-  credentials. Its `publish` job, the only one that sees
-  `PACKAGE_PUBLISH_TOKEN`, restores no cache. The code that job runs is
-  yurt-repo-ci from a yurt-pkg commit on main (built with `--locked`), with
-  its crates; its push step runs no hook from the clone.
+  credentials. Its `publish` job restores no cache and runs yurt-repo-ci from
+  a yurt-pkg commit on main (built with `--locked`), with its crates. Only its
+  `push` job sees `PACKAGE_PUBLISH_TOKEN`: it runs nothing but git, and
+  pushes only a commit it has verified to add the built archive and change
+  `packages/<name>.json`. That file's content is yurt-repo-ci's output and is
+  taken as is.
 
 Also accepted: tooling code can reach the read-only `YURT_RUST_READ_TOKEN` in
 the jobs it runs in.

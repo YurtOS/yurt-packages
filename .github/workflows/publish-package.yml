@@ -57,8 +57,8 @@ on:
         type: boolean
         default: false
 
-# Each job sets its own. Neither job's GITHUB_TOKEN can write: the push to
-# main uses PACKAGE_PUBLISH_TOKEN, in the publish job's last step only.
+# Each job sets its own. No job's GITHUB_TOKEN can write: the push to main
+# uses PACKAGE_PUBLISH_TOKEN, in the push job's last step only.
 permissions: {}
 
 # A real run commits a package to main. One at a time (rustup-dist's publish
@@ -377,14 +377,18 @@ jobs:
 
   # Writes the archive and its metadata to this repository. A fresh runner
   # that runs no port or build code: it reads the archive as data, checks
-  # it, and commits only that package's files. The push token is in the
-  # last step only.
+  # it, and commits only that package's files. It builds and runs
+  # yurt-repo-ci (with its crates' build scripts), so it never sees the push
+  # token: it hands over only a bundle of its commit, which the push job
+  # verifies.
   publish:
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: read
     timeout-minutes: 20
+    outputs:
+      commit_artifact_id: ${{ steps.upload-commit.outputs.artifact-id }}
     steps:
       - name: Runs on main only
         env:
@@ -549,6 +553,7 @@ jobs:
       # the new archive, so main never carries an unsigned index or a
       # placeholder.
       - name: Commit repository update
+        id: commit
         env:
           PACKAGE: ${{ inputs.package }}
           ARCHIVE: ${{ steps.archive.outputs.rel }}
@@ -574,22 +579,121 @@ jobs:
             exit 1
           fi
           git commit -m "chore: publish ${PACKAGE} package"
+          echo "committed $(git rev-parse HEAD):"
+          git show --stat --format='%s' HEAD
+          # The hand-over to the push job: this one commit, on the checkout.
+          mkdir -p "$RUNNER_TEMP/handover"
+          git bundle create "$RUNNER_TEMP/handover/commit.bundle" HEAD^..HEAD
+          echo "committed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the commit
+        id: upload-commit
+        if: ${{ steps.commit.outputs.committed == 'true' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: commit
+          path: ${{ runner.temp }}/handover/commit.bundle
+          if-no-files-found: error
+          retention-days: 1
+
+  # Pushes the publish job's commit to main. Another fresh runner that runs
+  # nothing but git on a credential-less checkout of this run's commit: no
+  # cargo, no toolchain, no code from yurt-pkg, yurt-ports or a port. It
+  # trusts only what it verifies in the hand-over bundle. A dry run verifies
+  # and stops before the push.
+  push:
+    needs: [build, publish]
+    if: ${{ needs.publish.outputs.commit_artifact_id != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    steps:
+      - name: Runs on main only
+        env:
+          REF: ${{ github.ref }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          [ "$REF" = refs/heads/main ] || [ "$DRY_RUN" = true ] ||
+            { echo "::error::Publish Package runs from main only (this run is on $REF)"; exit 1; }
+
+      - name: Check out yurt-packages
+        uses: actions/checkout@v7
+        with:
+          path: yurt-packages
+          persist-credentials: false
+
+      - name: Check the handover
+        id: handover
+        env:
+          ARTIFACT_ID: ${{ needs.publish.outputs.commit_artifact_id }}
+          SHA256: ${{ needs.build.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]] || { echo "::error::the publish job's artifact id is not all digits"; exit 1; }
+          [[ "$SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::the build job's sha256 is not 64-hex"; exit 1; }
+          echo "artifact_id=$ARTIFACT_ID" >> "$GITHUB_OUTPUT"
+
+      # By id, so it is the bundle this run's publish job uploaded.
+      - name: Download the commit
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ steps.handover.outputs.artifact_id }}
+          path: ${{ runner.temp }}/handover
+
+      # The commit must be one commit on this run's checkout that adds the
+      # package's archive (a regular file with the sha256 the build job
+      # reported) and adds or changes packages/<name>.json, and nothing else.
+      # packages/<name>.json is yurt-repo-ci's output and is taken as is.
+      - name: Verify the commit
+        env:
+          PACKAGE: ${{ inputs.package }}
+          SHA256: ${{ needs.build.outputs.sha256 }}
+        working-directory: yurt-packages
+        run: |
+          set -euo pipefail
+          [[ "$PACKAGE" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "::error::unexpected package name $PACKAGE"; exit 1; }
+          bundle="$RUNNER_TEMP/handover/commit.bundle"
+          [ -f "$bundle" ] && [ ! -L "$bundle" ] || { echo "::error::no commit bundle was handed over"; exit 1; }
+          start="$(git rev-parse HEAD)"
+          git bundle verify -q "$bundle"
+          git fetch -q --no-tags "$bundle" HEAD
+          commit="$(git rev-parse FETCH_HEAD)"
+          if [ "$(git rev-list --parents -n 1 "$commit")" != "$commit $start" ]; then
+            echo "::error::the hand-over must be one commit on $start"
+            exit 1
+          fi
+          archive_re="^artifacts/${PACKAGE}/[^/]+/${PACKAGE}-[^/]+\.yurtpkg$"
+          archive="" metadata=""
+          while IFS=$'\t' read -r status path; do
+            if [[ "$status" = A && "$path" =~ $archive_re && -z "$archive" ]]; then
+              archive="$path"
+            elif [[ ( "$status" = A || "$status" = M ) && "$path" = "packages/${PACKAGE}.json" ]]; then
+              metadata="$path"
+            else
+              echo "::error::the commit may add ${PACKAGE}'s archive and packages/${PACKAGE}.json only; it changes: $status $path"
+              exit 1
+            fi
+          done < <(git diff --no-renames --name-status "$start" "$commit")
+          [ -n "$archive" ] && [ -n "$metadata" ] ||
+            { echo "::error::the commit must add ${PACKAGE}'s archive and packages/${PACKAGE}.json"; exit 1; }
+          mode="$(git ls-tree "$commit" -- "$archive" | cut -d' ' -f1)"
+          [ "$mode" = 100644 ] || { echo "::error::${archive} is not a regular file (mode $mode)"; exit 1; }
+          actual="$(git cat-file blob "$commit:$archive" | sha256sum | cut -d' ' -f1)"
+          [ "$actual" = "$SHA256" ] ||
+            { echo "::error::${archive}'s sha256 $actual is not the build's $SHA256"; exit 1; }
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git merge -q --ff-only "$commit"
           # For the push step: the checkout commit, and the paths a moved
           # main must not have touched: everything this commit adds, the
           # package's metadata and artifacts directory, and the bundle of the
           # archive it adds.
-          git rev-parse HEAD^ > "$RUNNER_TEMP/publish-start"
-          {
-            git diff --name-only HEAD^ HEAD
-            echo "artifacts/${PACKAGE}"
-            echo "${ARCHIVE}.bundle"
-          } > "$RUNNER_TEMP/publish-scope"
-          echo "${ARCHIVE}.bundle" > "$RUNNER_TEMP/publish-own-bundles"
-          # The index.json and placeholder bundles publish-local left are not
-          # committed; a rebase needs a clean tree.
-          git reset -q --hard HEAD
-          echo "committed $(git rev-parse HEAD):"
-          git show --stat --format='%s' HEAD
+          echo "$start" > "$RUNNER_TEMP/publish-start"
+          printf '%s\n' "$archive" "$metadata" "artifacts/${PACKAGE}" "${archive}.bundle" > "$RUNNER_TEMP/publish-scope"
+          echo "${archive}.bundle" > "$RUNNER_TEMP/publish-own-bundles"
+          echo "verified $commit:"
+          git show --stat --format='%s' "$commit"
 
       # Other writers push to main while the build runs (a merged pull
       # request, a Release run). This commit touches only its own package's
@@ -602,23 +706,12 @@ jobs:
       - name: Push to main
         if: ${{ !inputs.dry_run }}
         env:
-          # The push credential, here only: the checkouts keep no token, and
-          # no earlier step of either job has it in its env.
+          # The push credential, here only: the checkouts keep no token, no
+          # earlier step of any job has it, and this job runs nothing but git.
           PUSH_TOKEN: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
         working-directory: yurt-packages
         run: |
           set -euo pipefail
-          # Earlier steps ran yurt-repo-ci (and its crates' build scripts)
-          # with write access to this clone's .git: no hook or fsmonitor
-          # command from it runs while the token is in the env. Command-line
-          # scope beats the repository's own config.
-          export GIT_CONFIG_COUNT=2
-          export GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null
-          export GIT_CONFIG_KEY_1=core.fsmonitor GIT_CONFIG_VALUE_1=false
-          if [ ! -s "$RUNNER_TEMP/publish-start" ]; then
-            echo "Nothing was committed; nothing to push."
-            exit 0
-          fi
           start="$(cat "$RUNNER_TEMP/publish-start")"
           scope=()
           while IFS= read -r path; do scope+=("$path"); done < "$RUNNER_TEMP/publish-scope"

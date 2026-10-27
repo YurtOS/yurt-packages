@@ -305,6 +305,8 @@ class PublishPushTest(unittest.TestCase):
         moved = self.move_main({"README.md": "docs\n"})
 
         def tamper(work: Path) -> None:
+            # Drop what publish-local left uncommitted, then move the commit onto the new main.
+            self.git("reset", "-q", "--hard", cwd=work)
             self.git("fetch", "-q", "origin", "main", cwd=work)
             self.git("rebase", "-q", "FETCH_HEAD", cwd=work)
 
