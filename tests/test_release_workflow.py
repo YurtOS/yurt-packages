@@ -166,7 +166,7 @@ class PublishPackageBuildEnvTest(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        self.job = load(PUBLISH)["jobs"]["publish"]
+        self.job = load(PUBLISH)["jobs"]["build"]
 
     def test_cargo_color_is_off_for_the_whole_job(self) -> None:
         self.assertEqual(self.job.get("env", {}).get("CARGO_TERM_COLOR"), "never")
@@ -181,10 +181,12 @@ class PublishPackagePortsTest(unittest.TestCase):
 
     def setUp(self) -> None:
         self.wf = load(PUBLISH)
-        self.steps = self.wf["jobs"]["publish"]["steps"]
+        # The build job's steps; step() also finds the publish job's.
+        self.steps = self.wf["jobs"]["build"]["steps"]
+        self.publish_steps = self.wf["jobs"]["publish"]["steps"]
 
     def step(self, name: str) -> dict:
-        return next(step for step in self.steps if step.get("name") == name)
+        return next(step for step in self.steps + self.publish_steps if step.get("name") == name)
 
     def test_a_run_off_main_stops_before_anything_else(self) -> None:
         # The commit step pushes HEAD:main; a dispatch from another branch
@@ -225,23 +227,22 @@ class PublishPackagePortsTest(unittest.TestCase):
             "${{ (inputs.package == 'numpy' || inputs.package == 'pyzmq') && '1' || '0' }}",
         )
 
-    def test_no_checkout_leaves_the_publish_token_in_a_clone(self) -> None:
-        for step in self.steps:
-            uses = step.get("uses", "")
-            with_ = step.get("with", {})
-            if uses.startswith("actions/checkout@") and "token" in with_:
-                self.assertIs(with_.get("persist-credentials"), False, step.get("name"))
-        commit = self.step("Commit repository update")
-        self.assertEqual(commit["env"]["PUSH_TOKEN"], "${{ secrets.PACKAGE_PUBLISH_TOKEN }}")
-        # The header is built after `set +x`, masked, and given to this push only.
-        run = commit["run"]
-        self.assertLess(run.index("set +x"), run.index("auth=$("))
+    def test_no_checkout_leaves_a_token_in_a_clone(self) -> None:
+        for step in self.steps + self.publish_steps:
+            if step.get("uses", "").startswith("actions/checkout@"):
+                self.assertIs(step.get("with", {}).get("persist-credentials"), False, step.get("name"))
+        push = self.step("Push to main")
+        self.assertEqual(push["env"]["PUSH_TOKEN"], "${{ secrets.PACKAGE_PUBLISH_TOKEN }}")
+        # The header is built with no trace on, masked, and given to the fetch and push only.
+        run = push["run"]
+        self.assertNotIn("set -x", run)
+        self.assertNotIn("set -euxo", run)
         self.assertIn('echo "::add-mask::$auth"', run)
         self.assertIn('git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" push origin HEAD:main', run)
 
     def test_only_node_gets_a_token_for_its_build(self) -> None:
         env = self.step("Build package artifact")["env"]
-        self.assertEqual(env["GH_TOKEN"], "${{ inputs.package == 'node' && secrets.PACKAGE_PUBLISH_TOKEN || '' }}")
+        self.assertEqual(env["GH_TOKEN"], "${{ inputs.package == 'node' && secrets.PACKAGE_READ_TOKEN || '' }}")
 
     def test_new_packages_are_choices_and_sudo_is_not(self) -> None:
         # PyYAML reads the `on:` key as True.

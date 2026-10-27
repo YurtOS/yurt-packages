@@ -138,19 +138,27 @@ class PolicyWorkflowTest(unittest.TestCase):
         self.assertEqual((allow["type"], allow["default"], allow["required"]), ("boolean", False, False))
 
     def test_the_policy_runs_before_anything_is_built(self) -> None:
-        step = self.steps[self.names.index("Publish only a new version")]
-        self.assertEqual(step["env"], {"PORT": "${{ inputs.package }}", "ALLOW_NEW_BUILD": "${{ inputs.allow_new_build }}"})
-        self.assertNotIn("${{", step["run"])
-        self.assertIn('python3 yurt-packages/tools/publish_policy.py check', step["run"])
-        self.assertIn('--manifest "yurt-ports/ports/${PORT}/yurt-pack.toml"', step["run"])
-        self.assertIn('--allow-new-build "$ALLOW_NEW_BUILD"', step["run"])
-        position = self.names.index("Publish only a new version")
-        self.assertGreater(position, self.names.index("The yurt-ports commit is on main"))
-        for later in ["Set up Rust", "Build package artifact", "Publish package metadata", "Commit repository update"]:
-            self.assertLess(position, self.names.index(later), later)
+        # In the build job before anything builds, and again in the publish job (on a fresh
+        # checkout, before publish-local and the commit).
+        for job, later_steps in [
+            ("build", ["Set up Rust", "Build package artifact", "Upload the archive"]),
+            ("publish", ["Publish package metadata", "Commit repository update", "Push to main"]),
+        ]:
+            names = [step.get("name") for step in self.wf["jobs"][job]["steps"]]
+            step = self.wf["jobs"][job]["steps"][names.index("Publish only a new version")]
+            self.assertEqual(step["env"], {"PORT": "${{ inputs.package }}", "ALLOW_NEW_BUILD": "${{ inputs.allow_new_build }}"})
+            self.assertNotIn("${{", step["run"])
+            self.assertIn('python3 yurt-packages/tools/publish_policy.py check', step["run"])
+            self.assertIn('--manifest "yurt-ports/ports/${PORT}/yurt-pack.toml"', step["run"])
+            self.assertIn('--allow-new-build "$ALLOW_NEW_BUILD"', step["run"])
+            position = names.index("Publish only a new version")
+            self.assertGreater(position, names.index("The yurt-ports commit is on main"), job)
+            for later in later_steps:
+                self.assertLess(position, names.index(later), (job, later))
 
     def test_publish_local_still_rejects_an_existing_release(self) -> None:
-        run = self.steps[self.names.index("Publish package metadata")]["run"]
+        publish = self.wf["jobs"]["publish"]["steps"]
+        run = next(step for step in publish if step.get("name") == "Publish package metadata")["run"]
         self.assertIn("--reject-existing", run)
 
 

@@ -29,9 +29,17 @@ REAL_GIT = shutil.which("git")
 ARCHIVE = "artifacts/zstd/1.5.7/zstd-1.5.7-1.yurtpkg"
 
 
-def commit_step() -> str:
+def step(name: str) -> dict:
     steps = yaml.safe_load(PUBLISH.read_text())["jobs"]["publish"]["steps"]
-    return next(step for step in steps if step.get("name") == "Commit repository update")["run"]
+    return next(step for step in steps if step.get("name") == name)
+
+
+def commit_step() -> str:
+    return step("Commit repository update")["run"]
+
+
+def push_step() -> str:
+    return step("Push to main")["run"]
 
 
 class PublishPushTest(unittest.TestCase):
@@ -162,18 +170,27 @@ class PublishPushTest(unittest.TestCase):
         return {"PUSH_HOOK": str(hook)}
 
     def run_step(self, extra: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-        script = self.tmp / "step.sh"
-        script.write_text(commit_step())
+        """The publish job's "Commit repository update" step, then (if it passed) "Push to main",
+        each with only the env the workflow gives it, as GitHub runs consecutive steps."""
         runner_temp = self.tmp / "runner-temp"
         runner_temp.mkdir(exist_ok=True)
-        env = {
+        base = {
             **self.env,
             "PATH": f"{self.bin}{os.pathsep}{self.env['PATH']}",
-            "PACKAGE": "zstd",
-            "PUSH_TOKEN": "not-a-token",
             "RUNNER_TEMP": str(runner_temp),
             **(extra or {}),
         }
+        commit = self.run_script(commit_step(), {**base, "PACKAGE": "zstd", "ARCHIVE": ARCHIVE})
+        if commit.returncode != 0:
+            return commit
+        push = self.run_script(push_step(), {**base, "PUSH_TOKEN": "not-a-token"})
+        return subprocess.CompletedProcess(
+            push.args, push.returncode, commit.stdout + push.stdout, commit.stderr + push.stderr
+        )
+
+    def run_script(self, text: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        script = self.tmp / "step.sh"
+        script.write_text(text)
         # GitHub's shell for `run:` steps.
         return subprocess.run(
             ["bash", "--noprofile", "--norc", "-eo", "pipefail", str(script)],
@@ -302,6 +319,23 @@ class PublishPushTest(unittest.TestCase):
         )
         self.assert_published_on(moved, self.run_step())
 
+    def test_refuses_to_commit_another_package_s_files(self) -> None:
+        # Only the archive and packages/zstd.json may be staged.
+        self.write(self.work / "packages/zlib.json", '{"name": "zlib", "tampered": true}\n')
+        result = self.run_step()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("the publish must change exactly", result.stdout)
+        self.assertIn("packages/zlib.json", result.stdout)
+        self.assertEqual(self.head(), self.start)
+
+    def test_refuses_an_archive_other_than_the_checked_one(self) -> None:
+        (self.work / ARCHIVE).unlink()
+        self.write(self.work / "artifacts/zstd/1.5.7/zstd-1.5.7-9.yurtpkg", "another build\n")
+        result = self.run_step()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("the publish must change exactly", result.stdout)
+        self.assertEqual(self.head(), self.start)
+
     def test_nothing_to_commit_pushes_nothing(self) -> None:
         for rel in [ARCHIVE, "packages/zstd.json"]:
             (self.work / rel).unlink()
@@ -314,6 +348,14 @@ class PublishPushTest(unittest.TestCase):
 class PublishPushStaticTest(unittest.TestCase):
     def test_no_expression_reaches_the_shell(self) -> None:
         self.assertNotIn("${{", commit_step())
+        self.assertNotIn("${{", push_step())
+
+    def test_only_the_push_step_gets_the_push_token(self) -> None:
+        self.assertNotIn("PUSH_TOKEN", step("Commit repository update").get("env", {}))
+        self.assertEqual(step("Push to main")["env"], {"PUSH_TOKEN": "${{ secrets.PACKAGE_PUBLISH_TOKEN }}"})
+
+    def test_a_dry_run_stops_before_the_push(self) -> None:
+        self.assertEqual(step("Push to main")["if"], "${{ !inputs.dry_run }}")
 
 
 if __name__ == "__main__":

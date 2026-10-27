@@ -18,8 +18,10 @@ class JobTimeoutTest(unittest.TestCase):
     def test_limits(self) -> None:
         # Publish Package: the slowest of its first 39 runs took 19.9 minutes. clang builds LLVM
         # twice (163 to 245 minutes in yurt-clang's release) and gets the 6-hour ceiling. The CI jobs take a few minutes.
-        publish = yaml.safe_load((WORKFLOWS / "publish-package.yml").read_text())["jobs"]["publish"]
-        self.assertEqual(publish["timeout-minutes"], "${{ inputs.package == 'clang' && 360 || 45 }}")
+        jobs = yaml.safe_load((WORKFLOWS / "publish-package.yml").read_text())["jobs"]
+        self.assertEqual(jobs["build"]["timeout-minutes"], "${{ inputs.package == 'clang' && 360 || 45 }}")
+        # The publish job builds yurt-repo-ci from cold and commits.
+        self.assertEqual(jobs["publish"]["timeout-minutes"], 20)
         for name, job in yaml.safe_load((WORKFLOWS / "ci.yml").read_text())["jobs"].items():
             self.assertEqual(job["timeout-minutes"], 10, name)
 
