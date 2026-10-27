@@ -1,0 +1,23 @@
+{
+  "name": "python-dev",
+  "versions": [
+    {
+      "version": "3.14.7",
+      "build": "yurt_0",
+      "url": "artifacts/python-dev/3.14.7/python-dev-3.14.7-yurt_0.yurtpkg",
+      "sha256": "feda3f9349643fc3b1a75cba9b6ef39862008435b49077d0a3e9f002bf45d988",
+      "size": 39534293,
+      "signing": {
+        "subject": "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main",
+        "issuer": "https://token.actions.githubusercontent.com"
+      },
+      "depends": [
+        {
+          "name": "python",
+          "req": "=3.14.7"
+        }
+      ],
+      "yanked": false
+    }
+  ]
+}
