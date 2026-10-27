@@ -118,6 +118,8 @@ class JobSplitTest(unittest.TestCase):
             {
                 "ports_sha": "${{ steps.ports.outputs.sha }}",
                 "pkg_sha": "${{ steps.pkg.outputs.sha }}",
+                "version": "${{ steps.release.outputs.version }}",
+                "build": "${{ steps.release.outputs.build }}",
                 "sha256": "${{ steps.archive.outputs.sha256 }}",
                 "artifact_id": "${{ steps.upload.outputs.artifact-id }}",
             },
@@ -176,6 +178,18 @@ class JobSplitTest(unittest.TestCase):
         check = next(step for step in self.publish["steps"] if step.get("name") == "The build job's commits are well-formed")
         self.assertEqual(check["env"]["REQUESTED_PORTS_SHA"], "${{ inputs.ports_sha }}")
         self.assertIn('[[ -z "$REQUESTED_PORTS_SHA" || "$PORTS_SHA" = "$REQUESTED_PORTS_SHA" ]]', check["run"])
+
+    def test_the_build_job_records_the_release_before_building(self) -> None:
+        # The push job pins the archive's path to the manifest's version and build, read before
+        # any build code runs.
+        names = self.names(self.build)
+        record = self.build["steps"][names.index("Record the release")]
+        self.assertEqual(record["id"], "release")
+        self.assertEqual(record["env"], {"PORT": "${{ inputs.package }}"})
+        self.assertIn("tomllib", record["run"])
+        self.assertIn("^[A-Za-z0-9._+~-]+$", record["run"])
+        self.assertGreater(names.index("Record the release"), names.index("The yurt-ports commit is on main"))
+        self.assertLess(names.index("Record the release"), names.index("Check out yurt-pkg"))
 
     def test_a_dry_run_never_takes_the_publish_group(self) -> None:
         # A group holds one pending run: a dry run in the shared group would replace a

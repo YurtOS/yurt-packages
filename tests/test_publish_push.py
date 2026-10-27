@@ -222,7 +222,9 @@ class PublishPushTest(unittest.TestCase):
         self.git("fetch", "-q", "--depth", "1", "origin", self.start, cwd=clone)
         self.git("checkout", "-q", "-B", "main", "FETCH_HEAD", cwd=clone)
         env = {**base, "RUNNER_TEMP": str(push_temp)}
-        verify = self.run_script(verify_step(), {**env, "PACKAGE": "zstd", "SHA256": sha256}, clone)
+        verify = self.run_script(
+            verify_step(), {**env, "PACKAGE": "zstd", "VERSION": "1.5.7", "BUILD": "1", "SHA256": sha256}, clone
+        )
         out, err = commit.stdout + verify.stdout, commit.stderr + verify.stderr
         if verify.returncode != 0:
             return subprocess.CompletedProcess(verify.args, verify.returncode, out, err)
@@ -343,6 +345,18 @@ class PublishPushTest(unittest.TestCase):
                     self.git("commit", "-q", "--amend", "--no-edit", cwd=work)
 
                 self.assert_not_pushed(self.run_step(tamper=tamper), f"{rel} is not a regular file")
+
+    def test_the_push_job_refuses_a_version_the_manifest_does_not_name(self) -> None:
+        # The build's bytes under a version that would get past the publish policy.
+        other = "artifacts/zstd/99.0/zstd-99.0-1.yurtpkg"
+
+        def tamper(work: Path) -> None:
+            self.write(work / other, ARCHIVE_TEXT)
+            self.git("add", other, cwd=work)
+            self.git("rm", "-q", "--cached", ARCHIVE, cwd=work)
+            self.git("commit", "-q", "--amend", "--no-edit", cwd=work)
+
+        self.assert_not_pushed(self.run_step(tamper=tamper), other)
 
     def test_the_push_job_refuses_an_archive_outside_its_version_directory(self) -> None:
         def tamper(work: Path) -> None:
@@ -486,7 +500,15 @@ class PublishPushStaticTest(unittest.TestCase):
 
     def test_only_the_push_step_gets_the_push_token(self) -> None:
         self.assertNotIn("PUSH_TOKEN", step("Commit repository update").get("env", {}))
-        self.assertEqual(step("Verify the commit", "push")["env"], {"PACKAGE": "${{ inputs.package }}", "SHA256": "${{ needs.build.outputs.sha256 }}"})
+        self.assertEqual(
+            step("Verify the commit", "push")["env"],
+            {
+                "PACKAGE": "${{ inputs.package }}",
+                "VERSION": "${{ needs.build.outputs.version }}",
+                "BUILD": "${{ needs.build.outputs.build }}",
+                "SHA256": "${{ needs.build.outputs.sha256 }}",
+            },
+        )
         self.assertEqual(step("Push to main", "push")["env"], {"PUSH_TOKEN": "${{ secrets.PACKAGE_PUBLISH_TOKEN }}"})
 
     def test_a_dry_run_stops_before_the_push(self) -> None:
