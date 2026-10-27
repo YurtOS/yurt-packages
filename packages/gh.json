@@ -1,0 +1,27 @@
+{
+  "name": "gh",
+  "versions": [
+    {
+      "version": "2.102.0",
+      "build": "1",
+      "url": "artifacts/gh/2.102.0/gh-2.102.0-1.yurtpkg",
+      "sha256": "213d59f0915097059c0359757db164f7b29893ccfeb87fcf0b0f3ed3d195097a",
+      "size": 15790070,
+      "signing": {
+        "subject": "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main",
+        "issuer": "https://token.actions.githubusercontent.com"
+      },
+      "depends": [
+        {
+          "name": "ca-certificates",
+          "req": "^2026.9.25"
+        },
+        {
+          "name": "git",
+          "req": "^2.55.0"
+        }
+      ],
+      "yanked": false
+    }
+  ]
+}
