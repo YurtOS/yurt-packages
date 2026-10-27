@@ -207,12 +207,18 @@ class PublishPackagePortsTest(unittest.TestCase):
 
     def test_the_cpython_chain_is_built_before_its_packages(self) -> None:
         deps = self.step("Build dependency stages")
-        for package in ["python", "numpy", "pyzmq", "python-seal", "perl", "curl", "git"]:
+        for package in ["python", "numpy", "pyzmq", "python-seal", "python-dev", "perl", "curl", "git"]:
             self.assertIn(f"inputs.package == '{package}'", deps["if"])
+        # Every package that builds the cpython chain gets the host Python it builds with.
+        host = self.step("Set up the host Python the cpython chain builds with")
+        for package in ["python", "numpy", "pyzmq", "python-seal", "python-dev"]:
+            self.assertIn(f"inputs.package == '{package}'", host["if"])
         run = deps["run"]
         self.assertIn('chain="zlib bzip2 xz openssl libzmq sqlite cpython-base"', run)
         # python's interpreter links numpy's and pyzmq's extensions in.
         self.assertIn('python) ports="$chain pyzmq numpy cpython" ;;', run)
+        # python-dev packs headers and libpython from that same cpython stage.
+        self.assertIn('python-dev) ports="$chain pyzmq numpy cpython" ;;', run)
         # numpy and pyzmq build here, against cpython-base (their own
         # build.sh outside port-cache.sh would look for cpython's full
         # stage), and the package step only packs them.
@@ -247,7 +253,7 @@ class PublishPackagePortsTest(unittest.TestCase):
         # PyYAML reads the `on:` key as True.
         trigger = self.wf.get("on", self.wf.get(True))
         options = trigger["workflow_dispatch"]["inputs"]["package"]["options"]
-        for package in ["python", "numpy", "pyzmq", "jupyter-kernel", "python-seal", "node", "gemini-cli", "perl", "make", "zstd", "pkgconf", "zlib"]:
+        for package in ["python", "numpy", "pyzmq", "jupyter-kernel", "python-seal", "python-dev", "node", "gemini-cli", "perl", "make", "zstd", "pkgconf", "zlib"]:
             self.assertIn(package, options)
         # The image's bootstrap: an install of sudo would replace the sudo it runs under.
         self.assertNotIn("sudo", options)
