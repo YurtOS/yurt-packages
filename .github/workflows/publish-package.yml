@@ -57,6 +57,8 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # The slowest run seen took 19.9 minutes; a hang fails here, not at 6 hours.
+    timeout-minutes: 45
     env:
       # dtolnay/rust-toolchain exports CARGO_TERM_COLOR=always when it is
       # unset. The guest SDK's cargo-yurt parses `cargo tree` output, and
