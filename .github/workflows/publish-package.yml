@@ -642,8 +642,9 @@ jobs:
           path: ${{ runner.temp }}/handover
 
       # The commit must be one commit on this run's checkout that adds the
-      # package's archive (a regular file with the sha256 the build job
-      # reported) and adds or changes packages/<name>.json, and nothing else.
+      # package's archive at artifacts/<name>/<version>/ (a regular file with
+      # the sha256 the build job reported) and adds or changes
+      # packages/<name>.json (a regular file), and nothing else.
       # packages/<name>.json is yurt-repo-ci's output and is taken as is.
       - name: Verify the commit
         env:
@@ -663,22 +664,30 @@ jobs:
             echo "::error::the hand-over must be one commit on $start"
             exit 1
           fi
-          archive_re="^artifacts/${PACKAGE}/[^/]+/${PACKAGE}-[^/]+\.yurtpkg$"
+          # artifacts/<name>/<version>/<name>-<version>-<build>.yurtpkg
+          archive_re="^artifacts/${PACKAGE}/([^/]+)/${PACKAGE}-([^/]+)\.yurtpkg$"
           archive="" metadata=""
           while IFS=$'\t' read -r status path; do
-            if [[ "$status" = A && "$path" =~ $archive_re && -z "$archive" ]]; then
-              archive="$path"
-            elif [[ ( "$status" = A || "$status" = M ) && "$path" = "packages/${PACKAGE}.json" ]]; then
-              metadata="$path"
-            else
-              echo "::error::the commit may add ${PACKAGE}'s archive and packages/${PACKAGE}.json only; it changes: $status $path"
-              exit 1
+            if [[ "$status" = A && -z "$archive" && "$path" =~ $archive_re ]]; then
+              version="${BASH_REMATCH[1]}" rest="${BASH_REMATCH[2]}"
+              if [[ "$rest" = "$version"-?* ]]; then
+                archive="$path"
+                continue
+              fi
             fi
+            if [[ ( "$status" = A || "$status" = M ) && "$path" = "packages/${PACKAGE}.json" ]]; then
+              metadata="$path"
+              continue
+            fi
+            echo "::error::the commit may add ${PACKAGE}'s archive and packages/${PACKAGE}.json only; it changes: $status $path"
+            exit 1
           done < <(git diff --no-renames --name-status "$start" "$commit")
           [ -n "$archive" ] && [ -n "$metadata" ] ||
             { echo "::error::the commit must add ${PACKAGE}'s archive and packages/${PACKAGE}.json"; exit 1; }
-          mode="$(git ls-tree "$commit" -- "$archive" | cut -d' ' -f1)"
-          [ "$mode" = 100644 ] || { echo "::error::${archive} is not a regular file (mode $mode)"; exit 1; }
+          for path in "$archive" "$metadata"; do
+            mode="$(git ls-tree "$commit" -- "$path" | cut -d' ' -f1)"
+            [ "$mode" = 100644 ] || { echo "::error::${path} is not a regular file (mode $mode)"; exit 1; }
+          done
           actual="$(git cat-file blob "$commit:$archive" | sha256sum | cut -d' ' -f1)"
           [ "$actual" = "$SHA256" ] ||
             { echo "::error::${archive}'s sha256 $actual is not the build's $SHA256"; exit 1; }
