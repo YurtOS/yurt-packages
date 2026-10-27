@@ -13,6 +13,19 @@
       },
       "depends": [],
       "yanked": false
+    },
+    {
+      "version": "6.5.0",
+      "build": "yurt_1",
+      "url": "artifacts/ncurses/6.5.0/ncurses-6.5.0-yurt_1.yurtpkg",
+      "sha256": "a8b750e2bb34619e02b980a6f74ad4b418f932ce3f996d3ddaa397ce2efd7d0e",
+      "size": 284802,
+      "signing": {
+        "subject": "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main",
+        "issuer": "https://token.actions.githubusercontent.com"
+      },
+      "depends": [],
+      "yanked": false
     }
   ]
 }
