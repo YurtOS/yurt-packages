@@ -36,6 +36,7 @@ on:
           - make
           - zstd
           - pkgconf
+          - zlib
       ports_sha:
         description: "yurt-ports commit to build from (full 40-hex SHA, in yurt-ports main's history); empty: main's head. The Python set (python, numpy, pyzmq, jupyter-kernel, python-seal) is published from one commit: pass the same one to all five."
         required: false
