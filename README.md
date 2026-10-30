@@ -425,3 +425,12 @@ the jobs it runs in.
 Clients use `yurt-rustup-init.sh` from the `yurt-rust` repository. It reads its
 pins file `scripts/rustup-init.pins` relative to its own location, so run it
 from a `yurt-rust` checkout; do not `curl | bash` the script alone.
+
+## Licenses
+
+The repository's own scripts, workflows, tests and metadata are licensed under
+the Apache License, Version 2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+That license does not cover the packages. Each package keeps its upstream
+license, named in the `license` field of the manifest inside its `.yurtpkg`
+archive (for example, BusyBox is `GPL-2.0-only`).
