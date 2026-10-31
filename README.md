@@ -65,8 +65,8 @@ anything is built, the workflow's "Publish only a new version" step
   unless the dispatch sets `allow_downgrade`. pkg picks the highest semver
   `version`, then the highest `N` of a `yurt_N` build (any other build, such as
   `1`, counts as 0), and skips yanked releases. So openssl 3.5.8 was refused
-  while 4.0.0 was published (it was yanked on 2026-10-31), and so is `0.1.1-yurt_0` next to a published
-  `0.1.1-2`. A downgrade publish adds an archive that `pkg install` never
+  while 4.0.0 was the newest unyanked release (it was yanked on 2026-10-31),
+  and so is `0.1.1-yurt_0` next to a published `0.1.1-2`. A downgrade publish adds an archive that `pkg install` never
   picks on its own; set the input only when that is the point (to pin
   `name@version` explicitly, for example). A port still on a plain numeric
   build (`1`, `2`) ranks 0 against every published build of its version, so a
