@@ -232,6 +232,22 @@ class PublishPackagePortsTest(unittest.TestCase):
             "${{ (inputs.package == 'numpy' || inputs.package == 'pyzmq') && '1' || '0' }}",
         )
 
+    def test_pkg_builds_its_pinned_yurt_pkg_against_a_fresh_sqlite(self) -> None:
+        # rusqlite is not bundled on wasm32: the pkg port links the sqlite
+        # port's stage, which nothing else in this job builds.
+        deps = self.step("Build dependency stages")
+        self.assertIn("inputs.package == 'pkg'", deps["if"])
+        self.assertIn('pkg) ports="sqlite" ;;', deps["run"])
+        # The pkg port refuses a yurt-pkg checkout other than the one its
+        # port.toml pins.
+        pin = self.step("Read the pkg port's yurt-pkg commit")
+        self.assertEqual(pin["if"], "inputs.package == 'pkg'")
+        self.assertIn("yurt-ports/ports/pkg/port.toml", pin["run"])
+        names = [step.get("name") for step in self.steps]
+        self.assertLess(names.index("Check out yurt-ports"), names.index("Read the pkg port's yurt-pkg commit"))
+        self.assertLess(names.index("Read the pkg port's yurt-pkg commit"), names.index("Check out yurt-pkg"))
+        self.assertEqual(self.step("Check out yurt-pkg")["with"]["ref"], "${{ steps.pkg_pin.outputs.rev }}")
+
     def test_no_checkout_leaves_a_token_in_a_clone(self) -> None:
         for step in self.steps + self.publish_steps:
             if step.get("uses", "").startswith("actions/checkout@"):
