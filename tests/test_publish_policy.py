@@ -159,10 +159,15 @@ class DowngradeTest(PolicyCase):
     def test_the_committed_openssl(self) -> None:
         if not (ROOT / "packages" / "openssl.json").exists():
             self.skipTest("openssl is not published")
-        newest = max(
-            (entry for entry in json.loads((ROOT / "packages" / "openssl.json").read_text())["versions"]),
-            key=lambda entry: publish_policy.release_key(entry["version"], entry["build"]),
-        )
+        # Yanked releases do not count: pkg skips them, and so does the policy.
+        current = [
+            entry
+            for entry in json.loads((ROOT / "packages" / "openssl.json").read_text())["versions"]
+            if entry.get("yanked") is not True
+        ]
+        if not current:
+            self.skipTest("every published openssl is yanked")
+        newest = max(current, key=lambda entry: publish_policy.release_key(entry["version"], entry["build"]))
         major = int(newest["version"].split(".")[0])
         if major == 0:
             self.skipTest("no older major version to try")
