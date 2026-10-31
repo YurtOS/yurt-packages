@@ -37,6 +37,7 @@ on:
           - zstd
           - pkgconf
           - zlib
+          - yurtos-x86
       ports_sha:
         description: "yurt-ports commit to build from (full 40-hex SHA, in yurt-ports main's history); empty: main's head. The Python set (python, numpy, pyzmq, jupyter-kernel, python-seal, python-dev) is published from one commit: pass the same one to all six (python-dev's first build, 3.14.7 yurt_0, comes from f4ff9bc, where its port was added)."
         required: false
@@ -219,6 +220,19 @@ jobs:
           # git config.
           persist-credentials: false
 
+      - name: Check out yurtos-x86
+        if: inputs.package == 'yurtos-x86'
+        uses: actions/checkout@v7
+        with:
+          repository: YurtOS/yurtos-x86
+          path: sources/yurtos-x86
+          # The port pins a yurtos-x86 commit and exports it with git archive.
+          fetch-depth: 0
+          token: ${{ secrets.PACKAGE_READ_TOKEN }}
+          # Read once here: no build step finds the token in a clone's
+          # git config.
+          persist-credentials: false
+
       - name: Set up bootstrap Go
         if: inputs.package == 'gh' || inputs.package == 'go'
         uses: actions/setup-go@v7
@@ -364,6 +378,7 @@ jobs:
           YURT_PKG_SOURCE: ${{ github.workspace }}/yurt-pkg
           YURT_CLANG_SOURCE: ${{ github.workspace }}/sources/yurt-clang
           YURT_GO_SOURCE: ${{ github.workspace }}/sources/yurt-go
+          YURTOS_X86_SOURCE: ${{ github.workspace }}/sources/yurtos-x86
           HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}
           PORT: ${{ inputs.package }}
           # node's port fetches its pinned YurtOS/yurt-node release (private)
