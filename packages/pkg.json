@@ -39,6 +39,19 @@
       },
       "depends": [],
       "yanked": false
+    },
+    {
+      "version": "0.2.0",
+      "build": "yurt_0",
+      "url": "artifacts/pkg/0.2.0/pkg-0.2.0-yurt_0.yurtpkg",
+      "sha256": "39ec5e57113aae9655e1cb137e512fdca0977562999c156d92a4063874f85330",
+      "size": 3611503,
+      "signing": {
+        "subject": "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main",
+        "issuer": "https://token.actions.githubusercontent.com"
+      },
+      "depends": [],
+      "yanked": false
     }
   ]
 }
