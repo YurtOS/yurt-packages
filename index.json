@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "index_version": 45,
-  "generated_at": "2026-10-31T19:15:35Z",
-  "expires_at": "2026-11-07T19:15:35Z",
+  "index_version": 46,
+  "generated_at": "2026-10-31T19:21:41Z",
+  "expires_at": "2026-11-07T19:21:41Z",
   "packages": {
     "busybox": {
       "sha256": "36e883bc8210d10fe6b15ecd5cc7e5528d34f44373341b04c37afcb68b5aaaf6",
@@ -65,8 +65,8 @@
       "url": "packages/numpy.json"
     },
     "openssl": {
-      "sha256": "82da02f71f78c31b46ca8c29e09d9309d44def48dadca067759c3f399b22facb",
-      "size": 516,
+      "sha256": "5b54fa6938be2f761fdf6465f20426f6701eb561eb608dfb290c2c9196ed9a7a",
+      "size": 989,
       "url": "packages/openssl.json"
     },
     "perl": {
