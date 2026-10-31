@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "index_version": 40,
-  "generated_at": "2026-10-27T23:25:44Z",
-  "expires_at": "2026-11-03T23:25:44Z",
+  "index_version": 41,
+  "generated_at": "2026-10-31T11:12:49Z",
+  "expires_at": "2026-11-07T11:12:49Z",
   "packages": {
     "busybox": {
       "sha256": "36e883bc8210d10fe6b15ecd5cc7e5528d34f44373341b04c37afcb68b5aaaf6",
@@ -108,6 +108,11 @@
       "sha256": "a8f9445a2731bcb51056a568f494c871f639ff17a6fb25f91896c15df5a30d8b",
       "size": 508,
       "url": "packages/rtk.json"
+    },
+    "yurtos-x86": {
+      "sha256": "156216da214610b247bb6d200e8fa3c5786fe274b10023a0b642a301f85865c2",
+      "size": 526,
+      "url": "packages/yurtos-x86.json"
     },
     "zlib": {
       "sha256": "1ff841f4dee6f53df1b88b78453e1ae58a7778fd35de96a01901fb757f4bf6a2",
