@@ -242,6 +242,8 @@ class PublishPackagePortsTest(unittest.TestCase):
         # port.toml pins.
         pin = self.step("Read the pkg port's yurt-pkg commit")
         self.assertEqual(pin["if"], "inputs.package == 'pkg'")
+        # The checkout's ref names this id: a rename would fall back to main.
+        self.assertEqual(pin["id"], "pkg_pin")
         self.assertIn("yurt-ports/ports/pkg/port.toml", pin["run"])
         names = [step.get("name") for step in self.steps]
         self.assertLess(names.index("Check out yurt-ports"), names.index("Read the pkg port's yurt-pkg commit"))
