@@ -245,9 +245,9 @@ class PublishPackagePortsTest(unittest.TestCase):
         self.assertIn('echo "::add-mask::$auth"', run)
         self.assertIn('git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" push origin HEAD:main', run)
 
-    def test_only_node_gets_a_token_for_its_build(self) -> None:
+    def test_only_node_and_clang_get_a_token_for_their_build(self) -> None:
         env = self.step("Build package artifact")["env"]
-        self.assertEqual(env["GH_TOKEN"], "${{ inputs.package == 'node' && secrets.PACKAGE_READ_TOKEN || '' }}")
+        self.assertEqual(env["GH_TOKEN"], "${{ (inputs.package == 'node' || inputs.package == 'clang') && secrets.PACKAGE_READ_TOKEN || '' }}")
 
     def test_new_packages_are_choices_and_sudo_is_not(self) -> None:
         # PyYAML reads the `on:` key as True.

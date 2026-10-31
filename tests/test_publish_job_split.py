@@ -193,8 +193,8 @@ class JobSplitTest(unittest.TestCase):
 
     def test_a_dry_run_never_takes_the_publish_group(self) -> None:
         # A group holds one pending run: a dry run in the shared group would replace a
-        # waiting real publish (or rustup-dist publish), and a clang dry run would hold it
-        # for hours. Each dry run gets a group of its own.
+        # waiting real publish (or rustup-dist publish), and a long build would hold it.
+        # Each dry run gets a group of its own.
         self.assertEqual(
             self.wf["concurrency"],
             {

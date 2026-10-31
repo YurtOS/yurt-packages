@@ -16,10 +16,10 @@ WORKFLOWS = Path(__file__).resolve().parent.parent / ".github" / "workflows"
 
 class JobTimeoutTest(unittest.TestCase):
     def test_limits(self) -> None:
-        # Publish Package: the slowest of its first 39 runs took 19.9 minutes. clang builds LLVM
-        # twice (163 to 245 minutes in yurt-clang's release) and gets the 6-hour ceiling. The CI jobs take a few minutes.
+        # Publish Package: the slowest of its first 39 runs took 19.9 minutes. clang packs a
+        # pinned yurt-clang release (no LLVM build). The CI jobs take a few minutes.
         jobs = yaml.safe_load((WORKFLOWS / "publish-package.yml").read_text())["jobs"]
-        self.assertEqual(jobs["build"]["timeout-minutes"], "${{ inputs.package == 'clang' && 360 || 45 }}")
+        self.assertEqual(jobs["build"]["timeout-minutes"], 45)
         # The publish job builds yurt-repo-ci from cold and commits.
         self.assertEqual(jobs["publish"]["timeout-minutes"], 20)
         # The push job runs git only.

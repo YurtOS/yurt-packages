@@ -83,10 +83,9 @@ jobs:
     permissions:
       contents: read
     # A hang fails here, not at GitHub's 6-hour default. 45 minutes: the
-    # slowest of the first 39 runs took 19.9. clang builds LLVM twice
-    # (clang+lld, no compiler cache): the same build in yurt-clang's release
-    # took 163 to 245 minutes on hosted runners, so it gets the 6-hour ceiling.
-    timeout-minutes: ${{ inputs.package == 'clang' && 360 || 45 }}
+    # slowest of the first 39 runs took 19.9. clang packs a pinned
+    # yurt-clang release and builds no LLVM.
+    timeout-minutes: 45
     outputs:
       ports_sha: ${{ steps.ports.outputs.sha }}
       pkg_sha: ${{ steps.pkg.outputs.sha }}
@@ -240,17 +239,6 @@ jobs:
           go-version: "1.27.1"
           cache: false
 
-      - name: Check out yurt-clang
-        if: inputs.package == 'clang'
-        uses: actions/checkout@v7
-        with:
-          repository: YurtOS/yurt-clang
-          path: sources/yurt-clang
-          token: ${{ secrets.PACKAGE_READ_TOKEN }}
-          # Read once here: no build step finds the token in a clone's
-          # git config.
-          persist-credentials: false
-
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@1.97.1
         with:
@@ -376,15 +364,14 @@ jobs:
           YURT_RUST_STD: ${{ github.workspace }}/yurtos-kernel/abi/build/rust-std/1.95.0
           YURT_PKG_ROOT: ${{ github.workspace }}/yurt-pkg
           YURT_PKG_SOURCE: ${{ github.workspace }}/yurt-pkg
-          YURT_CLANG_SOURCE: ${{ github.workspace }}/sources/yurt-clang
           YURT_GO_SOURCE: ${{ github.workspace }}/sources/yurt-go
           YURTOS_X86_SOURCE: ${{ github.workspace }}/sources/yurtos-x86
           HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}
           PORT: ${{ inputs.package }}
-          # node's port fetches its pinned YurtOS/yurt-node release (private)
-          # with gh: the one build that gets the read token in its
-          # environment.
-          GH_TOKEN: ${{ inputs.package == 'node' && secrets.PACKAGE_READ_TOKEN || '' }}
+          # node's and clang's ports fetch their pinned YurtOS/yurt-node and
+          # YurtOS/yurt-clang releases (private) with gh: the two builds that
+          # get the read token in their environment.
+          GH_TOKEN: ${{ (inputs.package == 'node' || inputs.package == 'clang') && secrets.PACKAGE_READ_TOKEN || '' }}
           # numpy and pyzmq were built by the dependency step (outside it,
           # their build would not find cpython-base); pack those stages.
           YURT_PACKAGE_SKIP_BUILD: ${{ (inputs.package == 'numpy' || inputs.package == 'pyzmq') && '1' || '0' }}
