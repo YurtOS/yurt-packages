@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "index_version": 42,
-  "generated_at": "2026-10-31T13:23:09Z",
-  "expires_at": "2026-11-07T13:23:09Z",
+  "index_version": 43,
+  "generated_at": "2026-10-31T13:31:18Z",
+  "expires_at": "2026-11-07T13:31:18Z",
   "packages": {
     "busybox": {
       "sha256": "36e883bc8210d10fe6b15ecd5cc7e5528d34f44373341b04c37afcb68b5aaaf6",
@@ -120,8 +120,8 @@
       "url": "packages/zlib.json"
     },
     "zsh": {
-      "sha256": "fa94cea9cb72d5238015b39237f77d4aeeb314ad6668ec5c313ccfe91082c1e3",
-      "size": 1702,
+      "sha256": "a26085791ce5b788d140961a4cdcbe80bc636bd16abfa0a693595aac9c8cd631",
+      "size": 2256,
       "url": "packages/zsh.json"
     },
     "zstd": {
