@@ -278,7 +278,7 @@ jobs:
       - name: Install Binaryen
         run: |
           set -euxo pipefail
-          BINARYEN_VER=119
+          BINARYEN_VER=131
           curl -sSL -o /tmp/binaryen.tar.gz \
             "https://github.com/WebAssembly/binaryen/releases/download/version_${BINARYEN_VER}/binaryen-version_${BINARYEN_VER}-x86_64-linux.tar.gz"
           mkdir -p "$HOME/.binaryen"
