@@ -1,0 +1,18 @@
+{
+  "name": "yurtos-x86",
+  "versions": [
+    {
+      "version": "0.1.0",
+      "build": "1",
+      "url": "artifacts/yurtos-x86/0.1.0/yurtos-x86-0.1.0-1.yurtpkg",
+      "sha256": "8f8c3bb9dc6044ce7c1c2db32e248344ace510e8d42c8c52a5c4b6750112d95c",
+      "size": 4016990,
+      "signing": {
+        "subject": "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main",
+        "issuer": "https://token.actions.githubusercontent.com"
+      },
+      "depends": [],
+      "yanked": false
+    }
+  ]
+}
