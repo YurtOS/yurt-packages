@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "index_version": 47,
-  "generated_at": "2026-10-31T19:33:43Z",
-  "expires_at": "2026-11-07T19:33:43Z",
+  "index_version": 48,
+  "generated_at": "2026-10-31T19:49:07Z",
+  "expires_at": "2026-11-07T19:49:07Z",
   "packages": {
     "busybox": {
       "sha256": "36e883bc8210d10fe6b15ecd5cc7e5528d34f44373341b04c37afcb68b5aaaf6",
@@ -25,8 +25,8 @@
       "url": "packages/gettext.json"
     },
     "gh": {
-      "sha256": "6cd7c02ebb1240b88bdf19376c80a35cb8e09ed220e31eac639ae6bc38b95d78",
-      "size": 676,
+      "sha256": "15abba6ea87ea9355d020b95298851e1a9bb680b6790cac6d991d296346638cc",
+      "size": 1323,
       "url": "packages/gh.json"
     },
     "go": {
