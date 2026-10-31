@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "index_version": 46,
-  "generated_at": "2026-10-31T19:21:41Z",
-  "expires_at": "2026-11-07T19:21:41Z",
+  "index_version": 47,
+  "generated_at": "2026-10-31T19:33:43Z",
+  "expires_at": "2026-11-07T19:33:43Z",
   "packages": {
     "busybox": {
       "sha256": "36e883bc8210d10fe6b15ecd5cc7e5528d34f44373341b04c37afcb68b5aaaf6",
@@ -30,8 +30,8 @@
       "url": "packages/gh.json"
     },
     "go": {
-      "sha256": "a2bf9f7b6a5938642a63e799a5ed66c5f83e25297920d31da32b019dd9df0e48",
-      "size": 618,
+      "sha256": "b67ef0d19179aad01842fc90f705939f08cdf05e818d7405d8e128f459432a55",
+      "size": 1207,
       "url": "packages/go.json"
     },
     "jupyter-kernel": {
