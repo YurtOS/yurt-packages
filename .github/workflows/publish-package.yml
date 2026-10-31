@@ -188,10 +188,23 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "build=$build" >> "$GITHUB_OUTPUT"
 
+      # The pkg port builds the guest pkg from the yurt-pkg commit its
+      # port.toml pins, and refuses any other checkout; every other package
+      # uses yurt-pkg's main for the packing tools.
+      - name: Read the pkg port's yurt-pkg commit
+        id: pkg_pin
+        if: inputs.package == 'pkg'
+        run: |
+          set -euo pipefail
+          rev=$(sed -n 's/^rev *= *"\(.*\)"/\1/p' yurt-ports/ports/pkg/port.toml | head -1)
+          [[ "$rev" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::ports/pkg/port.toml pins rev '$rev', not a commit"; exit 1; }
+          echo "rev=$rev" >> "$GITHUB_OUTPUT"
+
       - name: Check out yurt-pkg
         uses: actions/checkout@v7
         with:
           repository: YurtOS/yurt-pkg
+          ref: ${{ steps.pkg_pin.outputs.rev }}
           path: yurt-pkg
           token: ${{ secrets.PACKAGE_READ_TOKEN }}
           # Read once here: no build step finds the token in a clone's
@@ -316,7 +329,8 @@ jobs:
           inputs.package == 'curl' || inputs.package == 'git' ||
           inputs.package == 'python' || inputs.package == 'numpy' ||
           inputs.package == 'pyzmq' || inputs.package == 'python-seal' ||
-          inputs.package == 'python-dev' || inputs.package == 'perl'
+          inputs.package == 'python-dev' || inputs.package == 'perl' ||
+          inputs.package == 'pkg'
         env:
           YURT_KERNEL_ROOT: ${{ github.workspace }}/yurtos-kernel
           PACKAGE: ${{ inputs.package }}
@@ -346,6 +360,8 @@ jobs:
             # cpython-base; its build checks the kernel would admit it.
             python-seal) ports="zlib bzip2 xz openssl libzmq sqlite cpython-seal" ;;
             perl) ports="zlib bzip2" ;;
+            # rusqlite is not bundled on wasm32: pkg links the sqlite stage.
+            pkg) ports="sqlite" ;;
           esac
           # yurt-ports' port-cache.sh names each step (cpython-base is the
           # cpython port built in build/base) and runs it with the env the
