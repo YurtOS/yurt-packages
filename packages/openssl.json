@@ -12,7 +12,7 @@
         "issuer": "https://token.actions.githubusercontent.com"
       },
       "depends": [],
-      "yanked": false
+      "yanked": true
     }
   ]
 }
