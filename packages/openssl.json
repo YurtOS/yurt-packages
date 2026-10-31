@@ -13,6 +13,19 @@
       },
       "depends": [],
       "yanked": true
+    },
+    {
+      "version": "3.5.8",
+      "build": "1",
+      "url": "artifacts/openssl/3.5.8/openssl-3.5.8-1.yurtpkg",
+      "sha256": "75b13bb61297b361dc6a06fa99f54a61db2073a68f223abce9ab8e4718ccecbc",
+      "size": 2969227,
+      "signing": {
+        "subject": "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main",
+        "issuer": "https://token.actions.githubusercontent.com"
+      },
+      "depends": [],
+      "yanked": false
     }
   ]
 }
