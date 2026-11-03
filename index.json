@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "index_version": 55,
-  "generated_at": "2026-11-03T14:38:30Z",
-  "expires_at": "2026-11-10T14:38:30Z",
+  "index_version": 56,
+  "generated_at": "2026-11-03T14:52:38Z",
+  "expires_at": "2026-11-10T14:52:38Z",
   "packages": {
     "btop": {
       "sha256": "7cb89c00eae324ea589fae53fe638c54e17da723d13dc2d3557ab6ba28b3af8e",
@@ -35,8 +35,8 @@
       "url": "packages/gettext.json"
     },
     "gh": {
-      "sha256": "15abba6ea87ea9355d020b95298851e1a9bb680b6790cac6d991d296346638cc",
-      "size": 1323,
+      "sha256": "8d7d4ae8c3d1c34abd722aa692a576862c3daea52d8ea5ed1b869806f2b01a53",
+      "size": 1970,
       "url": "packages/gh.json"
     },
     "glow": {
