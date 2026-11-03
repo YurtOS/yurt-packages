@@ -13,6 +13,19 @@
       },
       "depends": [],
       "yanked": false
+    },
+    {
+      "version": "1.4.8",
+      "build": "yurt_1",
+      "url": "artifacts/btop/1.4.8/btop-1.4.8-yurt_1.yurtpkg",
+      "sha256": "36f5c7672831872be9fa2bb4afe21dde1e4619c2c98d8e660582ee787633b7da",
+      "size": 1078946,
+      "signing": {
+        "subject": "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main",
+        "issuer": "https://token.actions.githubusercontent.com"
+      },
+      "depends": [],
+      "yanked": false
     }
   ]
 }
