@@ -1,0 +1,23 @@
+{
+  "name": "lazygit",
+  "versions": [
+    {
+      "version": "0.66.2",
+      "build": "yurt_0",
+      "url": "artifacts/lazygit/0.66.2/lazygit-0.66.2-yurt_0.yurtpkg",
+      "sha256": "826ab8ef2f12f670c2fae9b5316b163cc71b5e02a72e22036bf38c9cf3fca70e",
+      "size": 8106836,
+      "signing": {
+        "subject": "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main",
+        "issuer": "https://token.actions.githubusercontent.com"
+      },
+      "depends": [
+        {
+          "name": "git",
+          "req": "^2.55.0"
+        }
+      ],
+      "yanked": false
+    }
+  ]
+}
