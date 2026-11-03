@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "index_version": 51,
-  "generated_at": "2026-11-03T13:39:19Z",
-  "expires_at": "2026-11-10T13:39:19Z",
+  "index_version": 52,
+  "generated_at": "2026-11-03T13:45:43Z",
+  "expires_at": "2026-11-10T13:45:43Z",
   "packages": {
     "btop": {
       "sha256": "7cb89c00eae324ea589fae53fe638c54e17da723d13dc2d3557ab6ba28b3af8e",
@@ -18,6 +18,11 @@
       "sha256": "0bff42350c4da68716311499813e536098d885fd1eaed61901b8dbd7a755006f",
       "size": 1008,
       "url": "packages/clang.json"
+    },
+    "file": {
+      "sha256": "261815cbdd4d5cb3a0d14bb775de76a76e4a559fa9dfa0a832e0e14c5c40075e",
+      "size": 520,
+      "url": "packages/file.json"
     },
     "gemini-cli": {
       "sha256": "8b0b002e0149d21491f8a3a5be6032f89d7c2cd54aa51929a585fdcc3bd95dea",
