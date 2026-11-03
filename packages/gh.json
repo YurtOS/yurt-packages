@@ -44,6 +44,28 @@
         }
       ],
       "yanked": false
+    },
+    {
+      "version": "2.102.0",
+      "build": "yurt_2",
+      "url": "artifacts/gh/2.102.0/gh-2.102.0-yurt_2.yurtpkg",
+      "sha256": "981953d11f407fdad0e1666283f01143f6278273b5e7a57e3ffb222a48918088",
+      "size": 15820113,
+      "signing": {
+        "subject": "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main",
+        "issuer": "https://token.actions.githubusercontent.com"
+      },
+      "depends": [
+        {
+          "name": "ca-certificates",
+          "req": "^2026.9.25"
+        },
+        {
+          "name": "git",
+          "req": "^2.55.0"
+        }
+      ],
+      "yanked": false
     }
   ]
 }
