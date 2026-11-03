@@ -271,10 +271,16 @@ class PublishPackagePortsTest(unittest.TestCase):
         # PyYAML reads the `on:` key as True.
         trigger = self.wf.get("on", self.wf.get(True))
         options = trigger["workflow_dispatch"]["inputs"]["package"]["options"]
-        for package in ["python", "numpy", "pyzmq", "jupyter-kernel", "python-seal", "python-dev", "node", "gemini-cli", "perl", "make", "zstd", "pkgconf", "zlib"]:
+        for package in ["python", "numpy", "pyzmq", "jupyter-kernel", "python-seal", "python-dev", "node", "gemini-cli", "perl", "make", "zstd", "pkgconf", "zlib", "btop", "file", "glow", "lazygit"]:
             self.assertIn(package, options)
         # The image's bootstrap: an install of sudo would replace the sudo it runs under.
         self.assertNotIn("sudo", options)
+
+    def test_every_go_port_gets_yurt_go_and_bootstrap_go(self) -> None:
+        # go, gh, glow and lazygit build with the yurt-go toolchain their port pins.
+        go_ports = "contains(fromJSON('[\"gh\", \"go\", \"glow\", \"lazygit\"]'), inputs.package)"
+        for name in ["Check out yurt-go", "Set up bootstrap Go"]:
+            self.assertEqual(self.step(name)["if"], go_ports, name)
 
 
 if __name__ == "__main__":
