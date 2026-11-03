@@ -1,12 +1,12 @@
 {
   "schema": 1,
-  "index_version": 56,
-  "generated_at": "2026-11-03T14:52:38Z",
-  "expires_at": "2026-11-10T14:52:38Z",
+  "index_version": 57,
+  "generated_at": "2026-11-03T15:11:41Z",
+  "expires_at": "2026-11-10T15:11:41Z",
   "packages": {
     "btop": {
-      "sha256": "7cb89c00eae324ea589fae53fe638c54e17da723d13dc2d3557ab6ba28b3af8e",
-      "size": 517,
+      "sha256": "82112629279a4a7346205a807dfb355f4a0c0f4df73d2d0e182aa3ad07db5ec3",
+      "size": 994,
       "url": "packages/btop.json"
     },
     "busybox": {
