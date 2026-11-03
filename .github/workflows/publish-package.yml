@@ -38,6 +38,10 @@ on:
           - pkgconf
           - zlib
           - yurtos-x86
+          - btop
+          - file
+          - glow
+          - lazygit
       ports_sha:
         description: "yurt-ports commit to build from (full 40-hex SHA, in yurt-ports main's history); empty: main's head. The Python set (python, numpy, pyzmq, jupyter-kernel, python-seal, python-dev) is published from one commit: pass the same one to all six (python-dev's first build, 3.14.7 yurt_0, comes from f4ff9bc, where its port was added)."
         required: false
@@ -220,12 +224,13 @@ jobs:
           echo "sha=$(git -C yurt-pkg rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Check out yurt-go
-        if: inputs.package == 'gh' || inputs.package == 'go'
+        if: contains(fromJSON('["gh", "go", "glow", "lazygit"]'), inputs.package)
         uses: actions/checkout@v7
         with:
           repository: YurtOS/yurt-go
           path: sources/yurt-go
-          # The port pins a yurt-go commit and exports it with git archive.
+          # The Go ports (go, gh, glow, lazygit) pin a yurt-go commit and
+          # export it with git archive.
           fetch-depth: 0
           token: ${{ secrets.PACKAGE_READ_TOKEN }}
           # Read once here: no build step finds the token in a clone's
@@ -246,7 +251,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up bootstrap Go
-        if: inputs.package == 'gh' || inputs.package == 'go'
+        if: contains(fromJSON('["gh", "go", "glow", "lazygit"]'), inputs.package)
         uses: actions/setup-go@v7
         with:
           go-version: "1.27.1"
