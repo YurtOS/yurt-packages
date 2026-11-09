@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "index_version": 58,
-  "generated_at": "2026-11-08T13:36:06Z",
-  "expires_at": "2026-11-15T13:36:06Z",
+  "index_version": 59,
+  "generated_at": "2026-11-09T05:23:07Z",
+  "expires_at": "2026-11-16T05:23:07Z",
   "packages": {
     "btop": {
       "sha256": "82112629279a4a7346205a807dfb355f4a0c0f4df73d2d0e182aa3ad07db5ec3",
