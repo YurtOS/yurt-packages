@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "index_version": 59,
-  "generated_at": "2026-11-09T05:23:07Z",
-  "expires_at": "2026-11-16T05:23:07Z",
+  "index_version": 60,
+  "generated_at": "2026-11-09T12:33:23Z",
+  "expires_at": "2026-11-16T12:33:23Z",
   "packages": {
     "btop": {
       "sha256": "82112629279a4a7346205a807dfb355f4a0c0f4df73d2d0e182aa3ad07db5ec3",
@@ -70,8 +70,8 @@
       "url": "packages/make.json"
     },
     "mkpdf": {
-      "sha256": "9f65bff0dc658153674afde582ae58683ab2868c4110ef56ac75bf9818d24b7e",
-      "size": 518,
+      "sha256": "39bbb49bdabb84e31603f7c3c6a9650ed5dcd53b227ace935bcf1835bb5d2458",
+      "size": 994,
       "url": "packages/mkpdf.json"
     },
     "ncurses": {
