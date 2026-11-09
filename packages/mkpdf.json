@@ -13,6 +13,19 @@
       },
       "depends": [],
       "yanked": false
+    },
+    {
+      "version": "0.2.0",
+      "build": "yurt_0",
+      "url": "artifacts/mkpdf/0.2.0/mkpdf-0.2.0-yurt_0.yurtpkg",
+      "sha256": "232fd0d740a3985643df7923e66e7b55ce9f9731829c3bbf6ebaa2db3717d002",
+      "size": 4728,
+      "signing": {
+        "subject": "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main",
+        "issuer": "https://token.actions.githubusercontent.com"
+      },
+      "depends": [],
+      "yanked": false
     }
   ]
 }
