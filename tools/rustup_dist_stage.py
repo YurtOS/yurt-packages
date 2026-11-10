@@ -644,6 +644,9 @@ def main(argv: list[str] | None = None) -> int:
     except (StageError, OSError) as error:
         print(f"rustup_dist_stage: {one_line(str(error))}", file=sys.stderr)
         return 1
+    except Exception as error:  # the contract is one escaped line, never a traceback
+        print(f"rustup_dist_stage: unexpected {type(error).__name__}: {one_line(str(error))}", file=sys.stderr)
+        return 1
     return 0
 
 
