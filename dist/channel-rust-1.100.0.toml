@@ -1,0 +1,85 @@
+manifest-version = "2"
+date = "2026-11-13"
+
+[pkg.rust]
+version = "1.100.0 (yurt 0.0.1)"
+
+[pkg.rust.target.aarch64-apple-darwin]
+available = true
+components = [{ pkg = "rustc", target = "aarch64-apple-darwin" }, { pkg = "cargo", target = "aarch64-apple-darwin" }, { pkg = "rust-std", target = "aarch64-apple-darwin" }]
+extensions = [{ pkg = "rust-std", target = "wasm32-yurt-linux-musl" }]
+
+[pkg.rust.target.x86_64-unknown-linux-gnu]
+available = true
+components = [{ pkg = "rustc", target = "x86_64-unknown-linux-gnu" }, { pkg = "cargo", target = "x86_64-unknown-linux-gnu" }, { pkg = "rust-std", target = "x86_64-unknown-linux-gnu" }]
+extensions = [{ pkg = "rust-std", target = "wasm32-yurt-linux-musl" }]
+
+[pkg.rust.target.aarch64-unknown-linux-gnu]
+available = true
+components = [{ pkg = "rustc", target = "aarch64-unknown-linux-gnu" }, { pkg = "cargo", target = "aarch64-unknown-linux-gnu" }, { pkg = "rust-std", target = "aarch64-unknown-linux-gnu" }]
+extensions = [{ pkg = "rust-std", target = "wasm32-yurt-linux-musl" }]
+
+[pkg.rustc]
+version = "1.100.0 (yurt 0.0.1)"
+
+[pkg.rustc.target.aarch64-apple-darwin]
+available = true
+url = "https://github.com/YurtOS/yurt-packages/releases/download/rustup-1.100.0-2026-11-13/rustc-1.100.0-aarch64-apple-darwin.tar.gz"
+hash = "1b31a8b6ee7f5890e83ab3dfb290cd7cca3d4927b658158e073594367e79e802"
+
+[pkg.rustc.target.x86_64-unknown-linux-gnu]
+available = true
+url = "https://github.com/YurtOS/yurt-packages/releases/download/rustup-1.100.0-2026-11-13/rustc-1.100.0-x86_64-unknown-linux-gnu.tar.gz"
+hash = "281ae49a7e3ac8ac6601b393023b4c576a24d48ffb53f8801d1c8fe6313fec10"
+
+[pkg.rustc.target.aarch64-unknown-linux-gnu]
+available = true
+url = "https://github.com/YurtOS/yurt-packages/releases/download/rustup-1.100.0-2026-11-13/rustc-1.100.0-aarch64-unknown-linux-gnu.tar.gz"
+hash = "6d4d25504430caa10e09421bd87d5e2b77fcd5e709843fa3947da18facf22c34"
+
+[pkg.cargo]
+version = "1.100.0 (yurt 0.0.1)"
+
+[pkg.cargo.target.aarch64-apple-darwin]
+available = true
+url = "https://github.com/YurtOS/yurt-packages/releases/download/rustup-1.100.0-2026-11-13/cargo-1.100.0-aarch64-apple-darwin.tar.gz"
+hash = "0d292fe3910b7d2619a25054ff324c1ecbb1dfb8bc61729b9a11b1dcd1b0d8d6"
+
+[pkg.cargo.target.x86_64-unknown-linux-gnu]
+available = true
+url = "https://github.com/YurtOS/yurt-packages/releases/download/rustup-1.100.0-2026-11-13/cargo-1.100.0-x86_64-unknown-linux-gnu.tar.gz"
+hash = "5d84c6b40ae6dc87b4c6a8237ea083b3f4903c8ccb5410362e94d57231cbe076"
+
+[pkg.cargo.target.aarch64-unknown-linux-gnu]
+available = true
+url = "https://github.com/YurtOS/yurt-packages/releases/download/rustup-1.100.0-2026-11-13/cargo-1.100.0-aarch64-unknown-linux-gnu.tar.gz"
+hash = "ac97b67ec7056671971f18361a251f6147df7be2a9f0fca8487d832ecdd39bdf"
+
+[pkg.rust-std]
+version = "1.100.0 (yurt 0.0.1)"
+
+[pkg.rust-std.target.aarch64-apple-darwin]
+available = true
+url = "https://github.com/YurtOS/yurt-packages/releases/download/rustup-1.100.0-2026-11-13/rust-std-1.100.0-aarch64-apple-darwin.tar.gz"
+hash = "f1cfdabc3c1a53f00d5285aaab35333a0609b2fc22d7eb6867f0f9f58ff5793c"
+
+[pkg.rust-std.target.x86_64-unknown-linux-gnu]
+available = true
+url = "https://github.com/YurtOS/yurt-packages/releases/download/rustup-1.100.0-2026-11-13/rust-std-1.100.0-x86_64-unknown-linux-gnu.tar.gz"
+hash = "53c4cdcd0dfaf3a21c1ac9734ad56142fbf94473a247be5ca6c36bd05ff06c67"
+
+[pkg.rust-std.target.wasm32-yurt-linux-musl]
+available = true
+url = "https://github.com/YurtOS/yurt-packages/releases/download/rustup-1.100.0-2026-11-13/rust-std-1.100.0-wasm32-yurt-linux-musl.tar.gz"
+hash = "7e2daf4a1a399648c1671ddb10e77123d2095ddb6d9afbf2d1141989c9c5e7ef"
+
+[pkg.rust-std.target.aarch64-unknown-linux-gnu]
+available = true
+url = "https://github.com/YurtOS/yurt-packages/releases/download/rustup-1.100.0-2026-11-13/rust-std-1.100.0-aarch64-unknown-linux-gnu.tar.gz"
+hash = "f5daf0f15f8e75dc0fe730cf981f2a44c623eac71da6293e9ef3f867f912361c"
+
+[renames]
+
+[profiles]
+minimal = ["rustc", "cargo", "rust-std"]
+default = ["rustc", "cargo", "rust-std"]

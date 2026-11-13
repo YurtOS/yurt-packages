@@ -1,0 +1,55 @@
+{
+  "archives": {
+    "aarch64-apple-darwin": {
+      "extraction_root": "yurt-rust-1.100.0-aarch64-apple-darwin",
+      "host": "aarch64-apple-darwin",
+      "kind": "hosted",
+      "name": "rust_1.100.0-0.0.1-darwin-arm64.tar.gz",
+      "sha256": "0dbdcd7e8451b637d635f5c0eceb9f0e39185bf6a81e0aa1a3b429ceece048c0",
+      "size": 246342165
+    },
+    "aarch64-unknown-linux-gnu": {
+      "extraction_root": "yurt-rust-1.100.0-aarch64-unknown-linux-gnu",
+      "host": "aarch64-unknown-linux-gnu",
+      "kind": "hosted",
+      "name": "rust_1.100.0-0.0.1-linux-arm64.tar.gz",
+      "sha256": "a0a74cb354e3c6942961914cf58764813b872092ada9f177836754dbc8448f02",
+      "size": 381020423
+    },
+    "x86_64-unknown-linux-gnu": {
+      "extraction_root": "yurt-rust-1.100.0-x86_64-unknown-linux-gnu",
+      "host": "x86_64-unknown-linux-gnu",
+      "kind": "hosted",
+      "name": "rust_1.100.0-0.0.1-linux-amd64.tar.gz",
+      "sha256": "29350be2fab80f3dfb69a852bd68da343a85b81c17b241300b520fd7c1369eea",
+      "size": 421078311
+    }
+  },
+  "date": "2026-11-13",
+  "guest_sdks": {
+    "aarch64-apple-darwin": {
+      "manifest_host": "darwin-arm64",
+      "release_tag": "guest-sdk-v0.0.39",
+      "sdk_lock_sha256": "d8ac8b53c3e56d05b90cb8131ada0f45f7a84a1a8ff26650548af627bbef6e37",
+      "source_revision": "c83743dc5b0ac51a1a15b6c7ee88e087d8ee2b92"
+    },
+    "aarch64-unknown-linux-gnu": {
+      "manifest_host": "linux-arm64",
+      "release_tag": "guest-sdk-v0.0.39",
+      "sdk_lock_sha256": "f46d28a60c13c5448c420b9a4e91b3c42970a311c95ba1f5241c9d25efeac7f6",
+      "source_revision": "c83743dc5b0ac51a1a15b6c7ee88e087d8ee2b92"
+    },
+    "x86_64-unknown-linux-gnu": {
+      "manifest_host": "linux-x86_64",
+      "release_tag": "guest-sdk-v0.0.39",
+      "sdk_lock_sha256": "a59dd98bb87207ba9631182f9f0ba36644e41f05bf090db5cfc458ddaa2a16ab",
+      "source_revision": "c83743dc5b0ac51a1a15b6c7ee88e087d8ee2b92"
+    }
+  },
+  "producer_host": "x86_64-unknown-linux-gnu",
+  "release_tag": "rust-v1.100.0-0.0.1",
+  "revision": "0.0.1",
+  "rust_version": "1.100.0",
+  "source_git_revision": "41feed8c754aa969fa22b42ad212b7d05e6c6736",
+  "tooling_sha": "30c4a0b1a635f04865d3b7d405d1ec6005f2ac10"
+}
