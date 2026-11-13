@@ -674,6 +674,11 @@ class SequenceTests(Harness):
         self.assertEqual((self.logs / "emit.leak").read_text(), "")
 
     def test_checker_failure_commits_no_manifest(self):
+        """Harness sequencing only: `run_sequence` stops at the first nonzero exit.
+
+        What really gates push on check is the workflow's `needs`, which
+        tests/test_publish_workflow.py (test_exactly_the_five_jobs_with_the_exact_needs) owns.
+        """
         ran = self.run_sequence(check_env={"FAKE_CHECKER_FAIL": "1"})
         self.assertEqual(list(ran), ["plan", "emit", "publish", "check"])
         self.assertIn("release upload", ran["publish"].verbs())
@@ -681,6 +686,7 @@ class SequenceTests(Harness):
         self.assert_nothing_pushed()
 
     def test_upload_failure_commits_no_manifest_and_skips_checker(self):
+        """Harness sequencing only; the `needs` chain is owned by tests/test_publish_workflow.py."""
         ran = self.run_sequence(publish_env={"FAKE_UPLOAD_FAIL": "1"})
         self.assertEqual(list(ran), ["plan", "emit", "publish"])
         self.assertNotEqual(ran["publish"].returncode, 0)
