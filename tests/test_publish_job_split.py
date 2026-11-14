@@ -108,6 +108,20 @@ class JobSplitTest(unittest.TestCase):
         for build_only in ["package.sh", "port-cache.sh", "install-yurt-sdk", "rust-cache", "curl ", "setup-"]:
             self.assertNotIn(build_only, dumped, build_only)
 
+    def test_every_action_is_pinned_by_sha_with_its_version_in_a_comment(self) -> None:
+        # A tag or branch can move; a SHA cannot. The comment names the version the SHA is.
+        lines = [line for line in PUBLISH.read_text().splitlines() if re.match(r"^\s*(-\s+)?uses:", line)]
+        self.assertTrue(lines)
+        for line in lines:
+            with self.subTest(line=line.strip()):
+                self.assertRegex(line, r"uses: \S+@[0-9a-f]{40} # v?\d+(\.\d+)*$")
+
+    def test_the_sha_pinned_rust_toolchain_names_its_toolchain(self) -> None:
+        # dtolnay/rust-toolchain reads the toolchain from the ref name; a SHA ref names none.
+        for job in (self.build, self.publish):
+            step = next(s for s in job["steps"] if s.get("uses", "").startswith("dtolnay/rust-toolchain@"))
+            self.assertEqual(step["with"]["toolchain"], "1.97.1")
+
     def test_no_rust_cache_reaches_the_publish_job(self) -> None:
         cache = next(step for step in self.build["steps"] if step.get("uses", "").startswith("Swatinem/rust-cache@"))
         self.assertEqual(cache["with"], {"shared-key": "publish-package-build"})
