@@ -118,7 +118,7 @@ jobs:
             { echo "::error::Publish Package runs from main only (this run is on $REF)"; exit 1; }
 
       - name: Check out yurt-packages
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: yurt-packages
           persist-credentials: false
@@ -132,7 +132,7 @@ jobs:
             { echo "::error::ports_sha must be empty or a full 40-hex commit SHA"; exit 1; }
 
       - name: Check out yurt-ports
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: YurtOS/yurt-ports
           path: yurt-ports
@@ -206,7 +206,7 @@ jobs:
           echo "rev=$rev" >> "$GITHUB_OUTPUT"
 
       - name: Check out yurt-pkg
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: YurtOS/yurt-pkg
           ref: ${{ steps.pkg_pin.outputs.rev }}
@@ -226,7 +226,7 @@ jobs:
 
       - name: Check out yurt-go
         if: contains(fromJSON('["gh", "go", "glow", "lazygit"]'), inputs.package)
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: YurtOS/yurt-go
           path: sources/yurt-go
@@ -240,7 +240,7 @@ jobs:
 
       - name: Check out yurtos-x86
         if: inputs.package == 'yurtos-x86'
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: YurtOS/yurtos-x86
           path: sources/yurtos-x86
@@ -253,14 +253,15 @@ jobs:
 
       - name: Set up bootstrap Go
         if: contains(fromJSON('["gh", "go", "glow", "lazygit"]'), inputs.package)
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.27.1"
           cache: false
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@1.97.1
+        uses: dtolnay/rust-toolchain@59a558e8c538bf4a23bbffa19e5a278b703f2920 # 1.97.1
         with:
+          toolchain: 1.97.1
           targets: wasm32-wasip1,wasm32-wasip1-threads
           components: rust-src
 
@@ -268,12 +269,12 @@ jobs:
       # build leaves in ~/.cargo or target/ never reaches the code that
       # writes to this repository.
       - name: Cache Rust builds
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: publish-package-build
 
       - name: Check out yurtos-kernel
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: YurtOS/yurtos-kernel
           path: yurtos-kernel
@@ -304,7 +305,7 @@ jobs:
           echo "WASI_SDK_PATH=$HOME/.local/share/wasi-sdk" >> "$GITHUB_ENV"
 
       - name: Set up Deno
-        uses: denoland/setup-deno@v2
+        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
         with:
           deno-version: v2.x
 
@@ -448,7 +449,7 @@ jobs:
             { echo "::error::Publish Package runs from main only (this run is on $REF)"; exit 1; }
 
       - name: Check out yurt-packages
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: yurt-packages
           persist-credentials: false
@@ -469,7 +470,7 @@ jobs:
 
       # Only to read the port's yurt-pack.toml; nothing from it runs.
       - name: Check out yurt-ports
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: YurtOS/yurt-ports
           path: yurt-ports
@@ -499,7 +500,7 @@ jobs:
             --allow-downgrade "$ALLOW_DOWNGRADE"
 
       - name: Check out yurt-pkg
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: YurtOS/yurt-pkg
           path: yurt-pkg
@@ -520,7 +521,9 @@ jobs:
       # No Rust cache: this job builds yurt-repo-ci from a clean ~/.cargo
       # and target/, so nothing a build job left behind runs here.
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@1.97.1
+        uses: dtolnay/rust-toolchain@59a558e8c538bf4a23bbffa19e5a278b703f2920 # 1.97.1
+        with:
+          toolchain: 1.97.1
 
       - name: Check the artifact id
         id: ids
@@ -667,7 +670,7 @@ jobs:
             { echo "::error::Publish Package runs from main only (this run is on $REF)"; exit 1; }
 
       - name: Check out yurt-packages
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: yurt-packages
           persist-credentials: false
