@@ -416,6 +416,30 @@ class WorkflowStructureTest(unittest.TestCase):
                 self.assertEqual(checks[0].get("run"), run)
                 self.assertEqual(checks[0].get("env"), env)
 
+    def test_emit_outputs_are_referenced_only_by_the_ids_steps_env(self) -> None:
+        """Every `needs.emit.outputs.*` sits in the `env` of a step with `id: ids`, nowhere else.
+
+        The key allowlist in the other tests says which outputs exist; this one says where they may
+        be read: not in a run script, a `with:`, an `if:`, a job-level key or another step's env.
+        """
+        needle = "needs.emit.outputs."
+        for name in JOBS:
+            job = self.job(name)
+            with self.subTest(job=name, where="job"):
+                self.assertNotIn(needle, json.dumps({k: v for k, v in job.items() if k != "steps"}))
+            for index, step in enumerate(self.steps(name)):
+                with self.subTest(job=name, step=index):
+                    outside_env = json.dumps({k: v for k, v in step.items() if k != "env"})
+                    self.assertNotIn(needle, outside_env)
+                    if needle in json.dumps(step.get("env") or {}):
+                        self.assertEqual(step.get("id"), "ids")
+
+    def test_no_job_calls_a_reusable_workflow_or_declares_secrets(self) -> None:
+        for name in JOBS:
+            with self.subTest(job=name):
+                self.assertNotIn("uses", self.job(name))
+                self.assertNotIn("secrets", self.job(name))
+
     def test_no_cache_in_privileged_jobs(self) -> None:
         for name in ("publish", "push"):
             for step in self.steps(name):

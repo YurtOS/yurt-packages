@@ -744,6 +744,15 @@ class EscapingTests(Case):
         for char in ("\r", "\x1b", " "):
             self.assertNotIn(char, out)
 
+    def test_main_reports_an_unexpected_exception_as_one_line_not_a_traceback(self):
+        stderr = io.StringIO()
+        with mock.patch.object(stage, "run", side_effect=KeyError("boom\nx")), contextlib.redirect_stderr(stderr):
+            self.assertEqual(stage.main(["plan", "--tooling-sha", "s"]), 1)
+        out = stderr.getvalue()
+        self.assertEqual(out.count("\n"), 1, out)
+        self.assertTrue(out.startswith("rustup_dist_stage: unexpected KeyError: "), out)
+        self.assertNotIn("Traceback", out)
+
 
 if __name__ == "__main__":
     unittest.main()
