@@ -271,7 +271,7 @@ class PublishPackagePortsTest(unittest.TestCase):
         # PyYAML reads the `on:` key as True.
         trigger = self.wf.get("on", self.wf.get(True))
         options = trigger["workflow_dispatch"]["inputs"]["package"]["options"]
-        for package in ["python", "numpy", "pyzmq", "jupyter-kernel", "python-seal", "python-dev", "node", "gemini-cli", "perl", "make", "zstd", "pkgconf", "zlib", "btop", "file", "glow", "lazygit"]:
+        for package in ["python", "pip", "numpy", "pyzmq", "jupyter-kernel", "python-seal", "python-dev", "node", "gemini-cli", "perl", "make", "zstd", "pkgconf", "zlib", "btop", "file", "glow", "lazygit"]:
             self.assertIn(package, options)
         # The image's bootstrap: an install of sudo would replace the sudo it runs under.
         self.assertNotIn("sudo", options)
