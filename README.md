@@ -132,6 +132,10 @@ a sandbox picks up a new build with `pkg update` / `pkg upgrade`. Notes:
     build fails if the kernel's checkpoint admission would refuse it.
 - `jupyter-kernel` fetches the pinned, public `jupyter-payload-v0.0.1`
   release of this repository; nothing is built.
+- `pip` takes pip from that same payload, plus the `pip`/`pip3` commands;
+  nothing is built. `python` depends on it from the Python set's `yurt_1`
+  on (yurt-ports#322), so publish `pip` before that set: a `pkg install
+  python` cannot resolve without it.
 - `node` stages a release of the private YurtOS/yurt-node, which its port
   fetches with `gh` using `PACKAGE_READ_TOKEN`. The node binary is the one the
   yurt-node release built, with the guest SDK named in its notes.

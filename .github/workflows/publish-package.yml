@@ -25,6 +25,7 @@ on:
           - gh
           - go
           - python
+          - pip
           - numpy
           - pyzmq
           - jupyter-kernel
