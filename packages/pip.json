@@ -1,0 +1,18 @@
+{
+  "name": "pip",
+  "versions": [
+    {
+      "version": "26.1.0",
+      "build": "yurt_0",
+      "url": "artifacts/pip/26.1.0/pip-26.1.0-yurt_0.yurtpkg",
+      "sha256": "8dd24270d44cb0c44bf58815b8edf4505c9491731ec40935c720db5345eeb02d",
+      "size": 1496795,
+      "signing": {
+        "subject": "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main",
+        "issuer": "https://token.actions.githubusercontent.com"
+      },
+      "depends": [],
+      "yanked": false
+    }
+  ]
+}
