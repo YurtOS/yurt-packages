@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "index_version": 75,
-  "generated_at": "2026-11-24T08:57:14Z",
-  "expires_at": "2026-12-01T08:57:14Z",
+  "index_version": 76,
+  "generated_at": "2026-11-24T18:07:06Z",
+  "expires_at": "2026-12-01T18:07:06Z",
   "packages": {
     "btop": {
       "sha256": "82112629279a4a7346205a807dfb355f4a0c0f4df73d2d0e182aa3ad07db5ec3",
@@ -45,8 +45,8 @@
       "url": "packages/glow.json"
     },
     "go": {
-      "sha256": "eabca632ce8670da60ee9006ce9e69452fc026e6c53b355d8004a8b0c8d0719d",
-      "size": 2385,
+      "sha256": "b69c760e9eefbb4757e5342aaa71ce3110e31ce32656c81b5c7bc9271516a261",
+      "size": 2974,
       "url": "packages/go.json"
     },
     "jupyter-kernel": {
