@@ -18,6 +18,24 @@
         }
       ],
       "yanked": false
+    },
+    {
+      "version": "3.14.7",
+      "build": "yurt_1",
+      "url": "artifacts/python-dev/3.14.7/python-dev-3.14.7-yurt_1.yurtpkg",
+      "sha256": "a3ec9fcdef479268a24a8fe2552ae2ea9df806f3f2fd93010bf5de32f5fa8890",
+      "size": 39585269,
+      "signing": {
+        "subject": "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main",
+        "issuer": "https://token.actions.githubusercontent.com"
+      },
+      "depends": [
+        {
+          "name": "python",
+          "req": "=3.14.7"
+        }
+      ],
+      "yanked": false
     }
   ]
 }
