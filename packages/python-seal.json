@@ -13,6 +13,19 @@
       },
       "depends": [],
       "yanked": false
+    },
+    {
+      "version": "3.14.7",
+      "build": "yurt_1",
+      "url": "artifacts/python-seal/3.14.7/python-seal-3.14.7-yurt_1.yurtpkg",
+      "sha256": "a71c831f6bbeafabe557f590222c245a914d96cc5d6e0081c66f34f94952fb6e",
+      "size": 11484850,
+      "signing": {
+        "subject": "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main",
+        "issuer": "https://token.actions.githubusercontent.com"
+      },
+      "depends": [],
+      "yanked": false
     }
   ]
 }
