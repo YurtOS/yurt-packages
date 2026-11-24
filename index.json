@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "index_version": 72,
-  "generated_at": "2026-11-24T08:07:55Z",
-  "expires_at": "2026-12-01T08:07:55Z",
+  "index_version": 73,
+  "generated_at": "2026-11-24T08:22:05Z",
+  "expires_at": "2026-12-01T08:22:05Z",
   "packages": {
     "btop": {
       "sha256": "82112629279a4a7346205a807dfb355f4a0c0f4df73d2d0e182aa3ad07db5ec3",
@@ -130,8 +130,8 @@
       "url": "packages/python-seal.json"
     },
     "pyzmq": {
-      "sha256": "9d4735cdd9e3d7525246e2936df613998e6c24583f51fcc1252c35ece7275e8d",
-      "size": 602,
+      "sha256": "3f083dcb3dbf9ebc4b8b1b4401d963ac1b763a96942c8d2f1768dd04a5a6ef78",
+      "size": 1162,
       "url": "packages/pyzmq.json"
     },
     "rtk": {
