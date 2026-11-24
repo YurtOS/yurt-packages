@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "index_version": 66,
-  "generated_at": "2026-11-24T06:34:50Z",
-  "expires_at": "2026-12-01T06:34:50Z",
+  "index_version": 67,
+  "generated_at": "2026-11-24T06:48:20Z",
+  "expires_at": "2026-12-01T06:48:20Z",
   "packages": {
     "btop": {
       "sha256": "82112629279a4a7346205a807dfb355f4a0c0f4df73d2d0e182aa3ad07db5ec3",
@@ -40,8 +40,8 @@
       "url": "packages/gh.json"
     },
     "glow": {
-      "sha256": "da305edcb3295957f31ca7ff682c807012bac837d5b573a4f4d437e267940b3a",
-      "size": 518,
+      "sha256": "b22062d865ee420966b589ec6965f5540926d417f9da8c63e3556f76c887a24b",
+      "size": 995,
       "url": "packages/glow.json"
     },
     "go": {
