@@ -18,6 +18,24 @@
         }
       ],
       "yanked": false
+    },
+    {
+      "version": "26.4.0",
+      "build": "yurt_1",
+      "url": "artifacts/pyzmq/26.4.0/pyzmq-26.4.0-yurt_1.yurtpkg",
+      "sha256": "148044ab0236a5727fef5176f6e8977a6955bbc0421575802c7b38d6207a2a19",
+      "size": 85942,
+      "signing": {
+        "subject": "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main",
+        "issuer": "https://token.actions.githubusercontent.com"
+      },
+      "depends": [
+        {
+          "name": "python",
+          "req": "^3.14"
+        }
+      ],
+      "yanked": false
     }
   ]
 }
