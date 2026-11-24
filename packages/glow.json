@@ -13,6 +13,19 @@
       },
       "depends": [],
       "yanked": false
+    },
+    {
+      "version": "3.0.0",
+      "build": "yurt_1",
+      "url": "artifacts/glow/3.0.0/glow-3.0.0-yurt_1.yurtpkg",
+      "sha256": "bd3869d830bff7ea6147f4e7849c0cf1eaa2695a9a1397e4e1d5e5bad01c429c",
+      "size": 7356068,
+      "signing": {
+        "subject": "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main",
+        "issuer": "https://token.actions.githubusercontent.com"
+      },
+      "depends": [],
+      "yanked": false
     }
   ]
 }
