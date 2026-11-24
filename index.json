@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "index_version": 70,
-  "generated_at": "2026-11-24T07:30:45Z",
-  "expires_at": "2026-12-01T07:30:45Z",
+  "index_version": 71,
+  "generated_at": "2026-11-24T07:50:32Z",
+  "expires_at": "2026-12-01T07:50:32Z",
   "packages": {
     "btop": {
       "sha256": "82112629279a4a7346205a807dfb355f4a0c0f4df73d2d0e182aa3ad07db5ec3",
@@ -125,8 +125,8 @@
       "url": "packages/python-dev.json"
     },
     "python-seal": {
-      "sha256": "f97273b76a4f3dda51de40ed8d5fb2d408db238395a2030138129bc0f5a71ec6",
-      "size": 543,
+      "sha256": "b6e0afad0e8d16e09b6dbb71d9ac5bb9b16c33aeb3643e128d710b87f7c9572e",
+      "size": 1038,
       "url": "packages/python-seal.json"
     },
     "pyzmq": {
