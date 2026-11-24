@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "index_version": 71,
-  "generated_at": "2026-11-24T07:50:32Z",
-  "expires_at": "2026-12-01T07:50:32Z",
+  "index_version": 72,
+  "generated_at": "2026-11-24T08:07:55Z",
+  "expires_at": "2026-12-01T08:07:55Z",
   "packages": {
     "btop": {
       "sha256": "82112629279a4a7346205a807dfb355f4a0c0f4df73d2d0e182aa3ad07db5ec3",
@@ -85,8 +85,8 @@
       "url": "packages/node.json"
     },
     "numpy": {
-      "sha256": "bedd4149fe00c17fc3e31190b6761787ebf65138abcadd3cb8588b38aecc3aa3",
-      "size": 601,
+      "sha256": "dc0798e908aa815748e8c9db51722ce01728207e050ef85cf93ca38d4ae24f36",
+      "size": 1160,
       "url": "packages/numpy.json"
     },
     "openssl": {
