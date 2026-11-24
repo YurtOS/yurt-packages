@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "index_version": 73,
-  "generated_at": "2026-11-24T08:22:05Z",
-  "expires_at": "2026-12-01T08:22:05Z",
+  "index_version": 74,
+  "generated_at": "2026-11-24T08:27:50Z",
+  "expires_at": "2026-12-01T08:27:50Z",
   "packages": {
     "btop": {
       "sha256": "82112629279a4a7346205a807dfb355f4a0c0f4df73d2d0e182aa3ad07db5ec3",
@@ -50,8 +50,8 @@
       "url": "packages/go.json"
     },
     "jupyter-kernel": {
-      "sha256": "bca2c33c8db91c06394bec2a564dcd2daa022cfb7d3abcd7677321fb38d5e06d",
-      "size": 701,
+      "sha256": "9bb8dc325cde15cb6bfeaecb851dacf4263df4151c740272c18eb3bc09aa5700",
+      "size": 1422,
       "url": "packages/jupyter-kernel.json"
     },
     "lazygit": {
