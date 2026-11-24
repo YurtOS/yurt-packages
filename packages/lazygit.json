@@ -18,6 +18,24 @@
         }
       ],
       "yanked": false
+    },
+    {
+      "version": "0.66.2",
+      "build": "yurt_1",
+      "url": "artifacts/lazygit/0.66.2/lazygit-0.66.2-yurt_1.yurtpkg",
+      "sha256": "6eacfc91e8fb815d4ac6de334dc82a220c66198e51812c4ecc70e028aef70aa4",
+      "size": 8121847,
+      "signing": {
+        "subject": "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main",
+        "issuer": "https://token.actions.githubusercontent.com"
+      },
+      "depends": [
+        {
+          "name": "git",
+          "req": "^2.55.0"
+        }
+      ],
+      "yanked": false
     }
   ]
 }
