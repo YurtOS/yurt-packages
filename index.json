@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "index_version": 74,
-  "generated_at": "2026-11-24T08:27:50Z",
-  "expires_at": "2026-12-01T08:27:50Z",
+  "index_version": 75,
+  "generated_at": "2026-11-24T08:57:14Z",
+  "expires_at": "2026-12-01T08:57:14Z",
   "packages": {
     "btop": {
       "sha256": "82112629279a4a7346205a807dfb355f4a0c0f4df73d2d0e182aa3ad07db5ec3",
@@ -115,8 +115,8 @@
       "url": "packages/pkgconf.json"
     },
     "python": {
-      "sha256": "a3f549c27337f3d7160e49b5e3b3d0d29825eae4ce0e254cf501c725c3726899",
-      "size": 622,
+      "sha256": "cdfb90d7fcd40e461a9235d0912543663233ed70c3e5d9f2cdcc79b23253e514",
+      "size": 1272,
       "url": "packages/python.json"
     },
     "python-dev": {
