@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "index_version": 67,
-  "generated_at": "2026-11-24T06:48:20Z",
-  "expires_at": "2026-12-01T06:48:20Z",
+  "index_version": 68,
+  "generated_at": "2026-11-24T07:02:15Z",
+  "expires_at": "2026-12-01T07:02:15Z",
   "packages": {
     "btop": {
       "sha256": "82112629279a4a7346205a807dfb355f4a0c0f4df73d2d0e182aa3ad07db5ec3",
@@ -55,8 +55,8 @@
       "url": "packages/jupyter-kernel.json"
     },
     "lazygit": {
-      "sha256": "6912c9f8906fc7aee28b970a1aebbdfaa020ed66372269d0041ca791eda4e97f",
-      "size": 609,
+      "sha256": "19d87e58cd0b6cc42fde282fb147b65a5844b3b52af0109134c7c947ecd92999",
+      "size": 1174,
       "url": "packages/lazygit.json"
     },
     "libcxx": {
