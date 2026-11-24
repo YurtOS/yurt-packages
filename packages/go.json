@@ -72,6 +72,24 @@
         }
       ],
       "yanked": false
+    },
+    {
+      "version": "1.28.0-devel",
+      "build": "yurt_4",
+      "url": "artifacts/go/1.28.0-devel/go-1.28.0-devel-yurt_4.yurtpkg",
+      "sha256": "f9886a99bed110f9c4054453e49a43af5efbe0b39b6b012c1feb4185ca409e36",
+      "size": 59866012,
+      "signing": {
+        "subject": "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main",
+        "issuer": "https://token.actions.githubusercontent.com"
+      },
+      "depends": [
+        {
+          "name": "ca-certificates",
+          "req": "^2026.9.25"
+        }
+      ],
+      "yanked": false
     }
   ]
 }
