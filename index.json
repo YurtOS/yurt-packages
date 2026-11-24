@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "index_version": 68,
-  "generated_at": "2026-11-24T07:02:15Z",
-  "expires_at": "2026-12-01T07:02:15Z",
+  "index_version": 69,
+  "generated_at": "2026-11-24T07:07:38Z",
+  "expires_at": "2026-12-01T07:07:38Z",
   "packages": {
     "btop": {
       "sha256": "82112629279a4a7346205a807dfb355f4a0c0f4df73d2d0e182aa3ad07db5ec3",
@@ -80,8 +80,8 @@
       "url": "packages/ncurses.json"
     },
     "node": {
-      "sha256": "3d89c640ab4e502402a2aa3f4386896a08f6ee6544687dc8e2b673d45fec75f0",
-      "size": 525,
+      "sha256": "78d871d1124a98c2299b31c69c3204dae2e8d0edaf43921a20cb084843ab9a1b",
+      "size": 1009,
       "url": "packages/node.json"
     },
     "numpy": {
