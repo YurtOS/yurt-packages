@@ -13,6 +13,19 @@
       },
       "depends": [],
       "yanked": false
+    },
+    {
+      "version": "22.23.3",
+      "build": "yurt_1",
+      "url": "artifacts/node/22.23.3/node-22.23.3-yurt_1.yurtpkg",
+      "sha256": "719eb915a55552b37847d3dbc7e71dcbab39732b51e8f06928d4c195a8639012",
+      "size": 13502229,
+      "signing": {
+        "subject": "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main",
+        "issuer": "https://token.actions.githubusercontent.com"
+      },
+      "depends": [],
+      "yanked": false
     }
   ]
 }
